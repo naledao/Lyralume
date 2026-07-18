@@ -31,7 +31,7 @@ export function AudioController(): null {
   useEffect(() => {
     const track = currentTrackFromState(useAppStore.getState());
     if (!track) {
-      audioEngine.pause();
+      audioEngine.releaseSource();
       return;
     }
     void audioEngine.load(track.playbackUrl, useAppStore.getState().isPlaying);

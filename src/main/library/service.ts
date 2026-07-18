@@ -1,3 +1,4 @@
+import { stat } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { watch, type FSWatcher } from 'chokidar';
 import type {
@@ -5,13 +6,25 @@ import type {
   ScanProgress,
   ScanResult,
   ScanWarning,
+  TrackMetadataUpdate,
 } from '../../shared/contracts.js';
 import { logger } from '../logging.js';
 import { LibraryDatabase } from './database.js';
-import { isLibraryFile, scanRoot } from './scanner.js';
+import { isAudioCandidateFile, isLibraryFile, scanRoot } from './scanner.js';
 
 type SnapshotListener = (snapshot: LibrarySnapshot) => void;
 type ProgressListener = (progress: ScanProgress) => void;
+
+export interface TrackMetadataWriter {
+  writeMetadataAndVerify(audioPath: string, metadata: TrackMetadataUpdate): Promise<void>;
+}
+
+function cleanMetadataField(value: string, label: string): string {
+  if (/\0|[\r\n]/.test(value)) throw new Error(`${label}包含不支持的控制字符`);
+  const cleaned = value.trim();
+  if (cleaned.length > 300) throw new Error(`${label}不能超过 300 个字符`);
+  return cleaned;
+}
 
 export class LibraryService {
   private readonly watchers = new Map<string, FSWatcher>();
@@ -20,7 +33,10 @@ export class LibraryService {
   private snapshotListener?: SnapshotListener;
   private progressListener?: ProgressListener;
 
-  constructor(private readonly database: LibraryDatabase) {}
+  constructor(
+    private readonly database: LibraryDatabase,
+    private readonly metadataWriter?: TrackMetadataWriter,
+  ) {}
 
   setListeners(onSnapshot: SnapshotListener, onProgress: ProgressListener): void {
     this.snapshotListener = onSnapshot;
@@ -31,18 +47,104 @@ export class LibraryService {
     return this.database.getSnapshot();
   }
 
+  refreshSnapshot(): LibrarySnapshot {
+    const snapshot = this.database.getSnapshot();
+    this.snapshotListener?.(snapshot);
+    return snapshot;
+  }
+
   async initializeWatchers(): Promise<void> {
     for (const root of this.database.getRoots()) this.watchRoot(root.path);
   }
 
   addAndScan(rootPath: string): Promise<ScanResult> {
+    this.database.clearIgnoredForImport(rootPath);
     this.database.addRoot(rootPath);
     this.watchRoot(rootPath);
     return this.enqueueScan([rootPath]);
   }
 
+  async addAndScanDropped(droppedPaths: string[]): Promise<ScanResult> {
+    logger.info(`Received ${droppedPaths.length} dropped path(s) for import`);
+    const warnings: ScanWarning[] = [];
+    const existing = new Set(this.database.getRoots().map((root) => root.path.toLocaleLowerCase()));
+    const roots: string[] = [];
+
+    for (const droppedPath of droppedPaths) {
+      const key = droppedPath.toLocaleLowerCase();
+      if (existing.has(key)) {
+        this.database.clearIgnoredForImport(droppedPath);
+        roots.push(droppedPath);
+        continue;
+      }
+      try {
+        const droppedStat = await stat(droppedPath);
+        if (!droppedStat.isDirectory() && !(droppedStat.isFile() && isAudioCandidateFile(droppedPath))) {
+          warnings.push({ fileName: basename(droppedPath), message: '不是受支持的音乐文件或文件夹' });
+          continue;
+        }
+        existing.add(key);
+        roots.push(droppedPath);
+        this.database.clearIgnoredForImport(droppedPath);
+        this.database.addRoot(droppedPath);
+        this.watchRoot(droppedPath);
+      } catch (error) {
+        warnings.push({
+          fileName: basename(droppedPath),
+          message: error instanceof Error ? error.message : '拖入项目无法访问',
+        });
+      }
+    }
+
+    if (roots.length === 0) {
+      return {
+        ...this.database.getSnapshot(),
+        scannedFiles: 0,
+        importedTracks: 0,
+        warnings,
+      };
+    }
+    const result = await this.enqueueScan(roots);
+    return { ...result, warnings: [...warnings, ...result.warnings] };
+  }
+
   rescanAll(): Promise<ScanResult> {
     return this.enqueueScan(this.database.getRoots().map((root) => root.path));
+  }
+
+  removeTrack(trackId: string): Promise<LibrarySnapshot> {
+    const next = this.scanQueue.then(async () => {
+      const removed = this.database.removeTrack(trackId);
+      if (removed?.rootRemoved) await this.unwatchRoot(removed.rootPath);
+      return this.refreshSnapshot();
+    });
+    this.scanQueue = next.catch(() => undefined);
+    return next;
+  }
+
+  updateTrackMetadata(trackId: string, metadata: TrackMetadataUpdate): Promise<LibrarySnapshot> {
+    const normalized: TrackMetadataUpdate = {};
+    const labels = { title: '歌曲名', artist: '艺术家', album: '专辑' } as const;
+    for (const field of ['title', 'artist', 'album'] as const) {
+      const value = metadata[field];
+      if (value !== undefined) normalized[field] = cleanMetadataField(value, labels[field]);
+    }
+    if (Object.keys(normalized).length === 0) throw new Error('没有需要保存的歌曲信息');
+    const next = this.scanQueue.then(async () => {
+      const track = this.database.getTrackLocation(trackId);
+      if (!track) throw new Error('音乐库中找不到这首歌曲');
+      if (!this.metadataWriter) throw new Error('歌曲标签写入功能尚未配置');
+      await this.metadataWriter.writeMetadataAndVerify(track.filePath, normalized);
+      if (!this.database.setTrackMetadata(trackId, normalized)) {
+        throw new Error('音乐库中找不到这首歌曲');
+      }
+      logger.info(
+        `[track:${trackId}] Wrote ${Object.keys(normalized).join(', ')} to the source audio file and verified it`,
+      );
+      return this.refreshSnapshot();
+    });
+    this.scanQueue = next.catch(() => undefined);
+    return next;
   }
 
   private enqueueScan(rootPaths: string[]): Promise<ScanResult> {
@@ -73,6 +175,12 @@ export class LibraryService {
       }
     }
 
+    this.progressListener?.({
+      rootPath: rootPaths.at(-1) ?? '',
+      processed: scannedFiles,
+      total: scannedFiles,
+      completed: true,
+    });
     const snapshot = this.database.getSnapshot();
     this.snapshotListener?.(snapshot);
     return { ...snapshot, scannedFiles, importedTracks, warnings };
@@ -100,6 +208,15 @@ export class LibraryService {
     watcher.on('add', schedule).on('change', schedule).on('unlink', schedule);
     watcher.on('error', (error) => logger.warn(`Watcher error for ${rootPath}`, error));
     this.watchers.set(rootPath, watcher);
+  }
+
+  private async unwatchRoot(rootPath: string): Promise<void> {
+    const timer = this.debounceTimers.get(rootPath);
+    if (timer) clearTimeout(timer);
+    this.debounceTimers.delete(rootPath);
+    const watcher = this.watchers.get(rootPath);
+    this.watchers.delete(rootPath);
+    await watcher?.close();
   }
 
   async close(): Promise<void> {

@@ -72,4 +72,59 @@ describe('LibraryDatabase', () => {
     expect(database.getSnapshot().tracks).toHaveLength(0);
     database.close();
   });
+
+  it('keeps edited artist and album values when the audio file is rescanned', async () => {
+    const { database, directory } = await createDatabase();
+    const musicPath = path.join(directory, 'track.flac');
+    const track = scannedTrack(directory, musicPath);
+    database.syncRoot(directory, [track], new Set([musicPath]));
+
+    expect(database.setTrackMetadata(track.id, {
+      title: 'Edited Title',
+      artist: 'Edited Artist',
+      album: 'Edited Album',
+    })).toBe(true);
+    database.syncRoot(directory, [track], new Set([musicPath]));
+
+    expect(database.getSnapshot().tracks[0]).toMatchObject({
+      title: 'Edited Title',
+      artist: 'Edited Artist',
+      album: 'Edited Album',
+    });
+    expect(database.getTrackLocation(track.id)).toMatchObject({
+      title: 'Edited Title',
+      artist: 'Edited Artist',
+      album: 'Edited Album',
+    });
+    database.close();
+  });
+
+  it('removes a folder track without deleting its root and keeps it ignored on rescan', async () => {
+    const { database, directory } = await createDatabase();
+    const musicPath = path.join(directory, 'track.flac');
+    const track = scannedTrack(directory, musicPath);
+    database.syncRoot(directory, [track], new Set([musicPath]));
+
+    expect(database.removeTrack(track.id)).toMatchObject({ rootRemoved: false, filePath: musicPath });
+    expect(database.getSnapshot()).toMatchObject({ tracks: [], roots: [{ path: directory }] });
+
+    database.syncRoot(directory, [track], new Set([musicPath]));
+    expect(database.getSnapshot().tracks).toHaveLength(0);
+
+    database.clearIgnoredForImport(musicPath);
+    database.syncRoot(directory, [track], new Set([musicPath]));
+    expect(database.getSnapshot().tracks).toHaveLength(1);
+    database.close();
+  });
+
+  it('removes a single-file library root together with its track', async () => {
+    const { database, directory } = await createDatabase();
+    const musicPath = path.join(directory, 'track.flac');
+    const track = scannedTrack(musicPath, musicPath);
+    database.syncRoot(musicPath, [track], new Set([musicPath]));
+
+    expect(database.removeTrack(track.id)).toMatchObject({ rootRemoved: true, rootPath: musicPath });
+    expect(database.getSnapshot()).toEqual({ tracks: [], roots: [] });
+    database.close();
+  });
 });

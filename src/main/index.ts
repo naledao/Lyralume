@@ -13,17 +13,28 @@ import {
 import { registerIpcHandlers, removeIpcHandlers } from './ipc.js';
 import { LibraryDatabase } from './library/database.js';
 import { LibraryService } from './library/service.js';
+import { Kid3Adapter } from './lyrics/kid3.js';
+import { LrclibClient } from './lyrics/lrclib.js';
+import { OnlineLyricsService } from './lyrics/online-lyrics-service.js';
 import { configureLogging, logger } from './logging.js';
+import { allowRendererMediaAccess } from './media-response.js';
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 let mainWindow: BrowserWindow | null = null;
 let database: LibraryDatabase | null = null;
 let library: LibraryService | null = null;
+let onlineLyrics: OnlineLyricsService | null = null;
 
 protocol.registerSchemesAsPrivileged([
   {
     scheme: 'lyralume-media',
-    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
   },
 ]);
 
@@ -90,9 +101,10 @@ function registerMediaProtocol(): void {
     if (url.hostname === 'track') {
       const track = database.getTrackLocation(id);
       if (!track || !existsSync(track.filePath)) return new Response('Not found', { status: 404 });
-      return net.fetch(pathToFileURL(track.filePath).toString(), {
+      const response = await net.fetch(pathToFileURL(track.filePath).toString(), {
         headers: request.headers,
       });
+      return allowRendererMediaAccess(response);
     }
     if (url.hostname === 'artwork') {
       const artwork = database.getArtwork(id);
@@ -111,9 +123,16 @@ function registerMediaProtocol(): void {
 async function start(): Promise<void> {
   const userDataPath = process.env.LYRALUME_E2E_USER_DATA || app.getPath('userData');
   database = new LibraryDatabase(path.join(userDataPath, 'library.db'));
-  library = new LibraryService(database);
+  const kid3 = new Kid3Adapter(path.join(userDataPath, 'cache', 'kid3'));
+  library = new LibraryService(database, kid3);
+  onlineLyrics = new OnlineLyricsService(
+    database,
+    library,
+    new LrclibClient(),
+    kid3,
+  );
   registerMediaProtocol();
-  registerIpcHandlers(() => mainWindow, database, library);
+  registerIpcHandlers(() => mainWindow, database, library, onlineLyrics);
   mainWindow = createWindow();
   await library.initializeWatchers();
 
@@ -156,6 +175,7 @@ app.on('before-quit', (event) => {
   const activeDatabase = database;
   library = null;
   database = null;
+  onlineLyrics = null;
   void activeLibrary.close().finally(() => {
     removeIpcHandlers();
     activeDatabase.close();

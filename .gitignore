@@ -5,6 +5,7 @@ release/
 coverage/
 playwright-report/
 test-results/
+test-artifacts/
 *.log
 *.db
 *.db-shm

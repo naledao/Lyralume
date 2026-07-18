@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AudioController } from './audio/AudioController';
 import { Artwork } from './components/Artwork';
 import { Icon } from './components/Icon';
@@ -12,6 +12,8 @@ import { AudioVisualizer } from './visuals/AudioVisualizer';
 export function App() {
   const [query, setQuery] = useState('');
   const [version, setVersion] = useState('');
+  const [dropActive, setDropActive] = useState(false);
+  const dragDepth = useRef(0);
   const tracks = useAppStore((state) => state.tracks);
   const roots = useAppStore((state) => state.roots);
   const libraryLoading = useAppStore((state) => state.libraryLoading);
@@ -21,6 +23,7 @@ export function App() {
   const applySnapshot = useAppStore((state) => state.applySnapshot);
   const setScanProgress = useAppStore((state) => state.setScanProgress);
   const chooseDirectory = useAppStore((state) => state.chooseDirectory);
+  const importDropped = useAppStore((state) => state.importDropped);
 
   useEffect(() => {
     void initialize();
@@ -41,9 +44,45 @@ export function App() {
     );
   }, [query, tracks]);
 
+  const handleDragEnter = (event: React.DragEvent<HTMLDivElement>): void => {
+    event.preventDefault();
+    dragDepth.current += 1;
+    setDropActive(true);
+  };
+
+  const handleDragLeave = (event: React.DragEvent<HTMLDivElement>): void => {
+    event.preventDefault();
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDropActive(false);
+  };
+
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>): void => {
+    event.preventDefault();
+    dragDepth.current = 0;
+    setDropActive(false);
+    const files = Array.from(event.dataTransfer.files);
+    if (files.length > 0) void importDropped(files);
+  };
+
   return (
-    <div className="app-shell">
+    <div
+      className="app-shell"
+      onDragEnter={handleDragEnter}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'copy';
+      }}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       <AudioController />
+      {dropActive && (
+        <div className="drop-overlay" role="status">
+          <div><Icon name="add" /></div>
+          <strong>松开鼠标导入音乐</strong>
+          <span>支持拖入音乐文件或整个文件夹</span>
+        </div>
+      )}
       <header className="titlebar">
         <span>Lyralume</span>
         {version && <small>v{version}</small>}

@@ -2,7 +2,12 @@ import { createHash } from 'node:crypto';
 import { access, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { parseFile } from 'music-metadata';
-import type { ScanProgress, ScanWarning } from '../../shared/contracts.js';
+import {
+  UNKNOWN_ALBUM,
+  UNKNOWN_ARTIST,
+  type ScanProgress,
+  type ScanWarning,
+} from '../../shared/contracts.js';
 import type { ScannedTrack } from './types.js';
 
 // These are scan candidates, not a claim that every codec/container is playable.
@@ -30,6 +35,12 @@ function trackId(filePath: string): string {
 }
 
 async function collectAudioFiles(rootPath: string): Promise<string[]> {
+  const rootStat = await stat(rootPath);
+  if (rootStat.isFile()) {
+    return AUDIO_CANDIDATE_EXTENSIONS.has(path.extname(rootPath).toLowerCase()) ? [rootPath] : [];
+  }
+  if (!rootStat.isDirectory()) return [];
+
   const files: string[] = [];
   const pending = [rootPath];
 
@@ -98,12 +109,13 @@ export async function scanRoot(
         filePath,
         fileName: path.basename(filePath),
         title: metadata.common.title?.trim() || baseName,
-        artist: metadata.common.artist?.trim() || '未知艺术家',
-        album: metadata.common.album?.trim() || '未知专辑',
+        artist: metadata.common.artist?.trim() || UNKNOWN_ARTIST,
+        album: metadata.common.album?.trim() || UNKNOWN_ALBUM,
         duration: Number.isFinite(metadata.format.duration) ? metadata.format.duration ?? 0 : 0,
         fileSize: fileStat.size,
         modifiedAt: fileStat.mtimeMs,
         lrcPath,
+        hasEmbeddedLyrics: Boolean(metadata.common.lyrics?.some((frame) => frame.syncText.length > 0)),
         artworkMime: artwork?.format ?? null,
         artwork: artwork?.data ? Buffer.from(artwork.data) : null,
       });
@@ -122,4 +134,8 @@ export async function scanRoot(
 export function isLibraryFile(filePath: string): boolean {
   const extension = path.extname(filePath).toLowerCase();
   return extension === '.lrc' || AUDIO_CANDIDATE_EXTENSIONS.has(extension);
+}
+
+export function isAudioCandidateFile(filePath: string): boolean {
+  return AUDIO_CANDIDATE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }

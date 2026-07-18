@@ -17,6 +17,7 @@ class AudioEngine {
 
   constructor() {
     this.audio.preload = 'metadata';
+    this.audio.crossOrigin = 'anonymous';
     this.audio.addEventListener('timeupdate', () => {
       this.emit('time', {
         currentTime: this.audio.currentTime,
@@ -70,9 +71,44 @@ class AudioEngine {
     this.audio.pause();
   }
 
+  releaseSource(): void {
+    this.loadGeneration += 1;
+    this.audio.pause();
+    this.audio.removeAttribute('src');
+    this.audio.load();
+  }
+
+  async restoreSource(sourceUrl: string, time: number): Promise<void> {
+    const generation = ++this.loadGeneration;
+    this.audio.pause();
+    this.audio.removeAttribute('src');
+    this.audio.load();
+    this.audio.src = sourceUrl;
+    this.audio.load();
+    if (this.audio.readyState < HTMLMediaElement.HAVE_METADATA) {
+      await new Promise<void>((resolve) => {
+        const finish = (): void => {
+          clearTimeout(timeout);
+          this.audio.removeEventListener('loadedmetadata', finish);
+          this.audio.removeEventListener('error', finish);
+          resolve();
+        };
+        const timeout = window.setTimeout(finish, 8_000);
+        this.audio.addEventListener('loadedmetadata', finish, { once: true });
+        this.audio.addEventListener('error', finish, { once: true });
+      });
+    }
+    if (generation !== this.loadGeneration) return;
+    this.seek(time);
+  }
+
   seek(time: number): void {
     if (!Number.isFinite(time)) return;
-    this.audio.currentTime = Math.min(Math.max(0, time), this.audio.duration || time);
+    try {
+      this.audio.currentTime = Math.min(Math.max(0, time), this.audio.duration || time);
+    } catch {
+      // A released media element can reject seeking until metadata is available.
+    }
   }
 
   setVolume(volume: number): void {
@@ -97,10 +133,7 @@ class AudioEngine {
   }
 
   async dispose(): Promise<void> {
-    this.loadGeneration += 1;
-    this.audio.pause();
-    this.audio.removeAttribute('src');
-    this.audio.load();
+    this.releaseSource();
     this.listeners.clear();
     if (this.context && this.context.state !== 'closed') await this.context.close();
     this.context = null;

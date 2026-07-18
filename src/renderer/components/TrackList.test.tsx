@@ -1,0 +1,133 @@
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { LyralumeApi, Track } from '../../shared/contracts';
+import { useAppStore } from '../store/useAppStore';
+import { TrackList } from './TrackList';
+
+const item: Track = {
+  id: '888888888888888888888888',
+  title: 'Editable Track',
+  artist: '未知艺术家',
+  album: '未知专辑',
+  fileName: 'Editable Track.flac',
+  duration: 60,
+  fileSize: 100,
+  modifiedAt: 1,
+  hasLyrics: true,
+  hasArtwork: false,
+  playbackUrl: 'lyralume-media://track/888888888888888888888888',
+};
+
+const api = {
+  library: {
+    getSnapshot: vi.fn(),
+    chooseDirectory: vi.fn(),
+    importDropped: vi.fn(),
+    updateMetadata: vi.fn(),
+    removeTrack: vi.fn(),
+    rescan: vi.fn(),
+    onChanged: vi.fn(() => () => undefined),
+    onScanProgress: vi.fn(() => () => undefined),
+  },
+  lyrics: {
+    load: vi.fn(),
+    getOnlineTask: vi.fn(),
+    searchOnline: vi.fn(),
+    saveOnline: vi.fn(),
+    writeTag: vi.fn(),
+  },
+  app: { getVersion: vi.fn() },
+} satisfies LyralumeApi;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  window.lyralume = api;
+  useAppStore.setState({
+    tracks: [item],
+    roots: [],
+    queueIds: [item.id],
+    currentTrackId: null,
+    isPlaying: false,
+    libraryMessage: null,
+  });
+});
+
+describe('TrackList metadata editing', () => {
+  it('enters edit mode on double click and saves artist and album', async () => {
+    const updated = {
+      ...item,
+      title: 'New Title',
+      artist: 'New Artist',
+      album: 'New Album',
+    };
+    api.library.updateMetadata.mockResolvedValue({ tracks: [updated], roots: [] });
+    render(<TrackList tracks={[item]} />);
+
+    fireEvent.doubleClick(screen.getByRole('button', { name: /播放 Editable Track.*双击编辑歌曲信息/ }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Editable Track 的歌曲名' }), {
+      target: { value: 'New Title' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Editable Track 的艺术家' }), {
+      target: { value: 'New Artist' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Editable Track 的专辑' }), {
+      target: { value: 'New Album' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '保存到文件' }));
+
+    await waitFor(() => expect(api.library.updateMetadata).toHaveBeenCalledWith(item.id, {
+      title: 'New Title',
+      artist: 'New Artist',
+      album: 'New Album',
+    }));
+    expect(screen.queryByRole('textbox', { name: 'Editable Track 的艺术家' })).not.toBeInTheDocument();
+  });
+
+  it('rewrites unchanged metadata when Enter is pressed', async () => {
+    const taggedItem = {
+      ...item,
+      artist: 'Current Artist',
+      album: 'Current Album',
+    };
+    api.library.updateMetadata.mockResolvedValue({ tracks: [taggedItem], roots: [] });
+    const { container } = render(<TrackList tracks={[taggedItem]} />);
+
+    fireEvent.click(container.querySelector('.track-row__edit') as HTMLElement);
+    const saveButton = container.querySelector('.track-row__save') as HTMLButtonElement;
+    expect(saveButton).toBeEnabled();
+    fireEvent.keyDown(screen.getAllByRole('textbox')[0], { key: 'Enter' });
+
+    await waitFor(() => expect(api.library.updateMetadata).toHaveBeenCalledWith(item.id, {
+      title: 'Editable Track',
+      artist: 'Current Artist',
+      album: 'Current Album',
+    }));
+  });
+
+  it('sends an empty field so its existing tag is deleted', async () => {
+    const taggedItem = {
+      ...item,
+      artist: 'Current Artist',
+      album: 'Current Album',
+    };
+    api.library.updateMetadata.mockResolvedValue({
+      tracks: [{ ...taggedItem, album: '未知专辑' }],
+      roots: [],
+    });
+    const { container } = render(<TrackList tracks={[taggedItem]} />);
+
+    fireEvent.click(container.querySelector('.track-row__edit') as HTMLElement);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Editable Track 的专辑' }), {
+      target: { value: '' },
+    });
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'Editable Track 的专辑' }), {
+      key: 'Enter',
+    });
+
+    await waitFor(() => expect(api.library.updateMetadata).toHaveBeenCalledWith(item.id, {
+      title: 'Editable Track',
+      artist: 'Current Artist',
+      album: '',
+    }));
+  });
+});

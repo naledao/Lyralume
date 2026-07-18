@@ -69,4 +69,19 @@ describe('scanRoot', () => {
     expect(result.tracks).toHaveLength(0);
     expect(result.warnings[0].fileName).toBe('broken.mp3');
   });
+
+  it('scans a single audio file dropped onto the application', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'lyralume-scan-test-'));
+    temporaryDirectories.push(directory);
+    const audioPath = path.join(directory, 'dropped.wav');
+    const siblingPath = path.join(directory, 'not-dropped.wav');
+    await writeFile(audioPath, pcmWave());
+    await writeFile(siblingPath, pcmWave());
+
+    const result = await scanRoot(audioPath);
+
+    expect(result.discoveredPaths).toEqual(new Set([audioPath]));
+    expect(result.tracks).toHaveLength(1);
+    expect(result.tracks[0].fileName).toBe('dropped.wav');
+  });
 });
