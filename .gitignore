@@ -1,0 +1,14 @@
+node_modules/
+dist-electron/
+dist-renderer/
+release/
+coverage/
+playwright-report/
+test-results/
+*.log
+*.db
+*.db-shm
+*.db-wal
+.vite/
+.DS_Store
+Thumbs.db
