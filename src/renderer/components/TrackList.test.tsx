@@ -31,10 +31,23 @@ const api = {
   },
   lyrics: {
     load: vi.fn(),
+    writeAdjustedTiming: vi.fn(),
     getOnlineTask: vi.fn(),
     searchOnline: vi.fn(),
     saveOnline: vi.fn(),
     writeTag: vi.fn(),
+    getLocalTask: vi.fn(),
+    getLocalModelSettings: vi.fn(),
+    chooseLocalUvrModel: vi.fn(),
+    resetLocalUvrModel: vi.fn(),
+    startLocal: vi.fn(),
+    cancelLocal: vi.fn(),
+    proofreadLocal: vi.fn(),
+    saveLocalDraft: vi.fn(),
+    confirmLocalLrc: vi.fn(),
+    writeLocalTag: vi.fn(),
+    onLocalTaskChanged: vi.fn(() => () => undefined),
+    onLocalProofreadProgress: vi.fn(() => () => undefined),
   },
   app: { getVersion: vi.fn() },
 } satisfies LyralumeApi;
@@ -48,6 +61,7 @@ beforeEach(() => {
     queueIds: [item.id],
     currentTrackId: null,
     isPlaying: false,
+    localLyricsTasks: {},
     libraryMessage: null,
   });
 });

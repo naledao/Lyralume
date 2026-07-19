@@ -9,6 +9,7 @@ import type {
   TrackMetadataUpdate,
 } from '../../shared/contracts.js';
 import { logger } from '../logging.js';
+import { TrackWriteCoordinator } from '../track-write-coordinator.js';
 import { LibraryDatabase } from './database.js';
 import { isAudioCandidateFile, isLibraryFile, scanRoot } from './scanner.js';
 
@@ -36,6 +37,7 @@ export class LibraryService {
   constructor(
     private readonly database: LibraryDatabase,
     private readonly metadataWriter?: TrackMetadataWriter,
+    private readonly trackWrites = new TrackWriteCoordinator(),
   ) {}
 
   setListeners(onSnapshot: SnapshotListener, onProgress: ProgressListener): void {
@@ -134,7 +136,10 @@ export class LibraryService {
       const track = this.database.getTrackLocation(trackId);
       if (!track) throw new Error('音乐库中找不到这首歌曲');
       if (!this.metadataWriter) throw new Error('歌曲标签写入功能尚未配置');
-      await this.metadataWriter.writeMetadataAndVerify(track.filePath, normalized);
+      await this.trackWrites.run(
+        trackId,
+        () => this.metadataWriter!.writeMetadataAndVerify(track.filePath, normalized),
+      );
       if (!this.database.setTrackMetadata(trackId, normalized)) {
         throw new Error('音乐库中找不到这首歌曲');
       }

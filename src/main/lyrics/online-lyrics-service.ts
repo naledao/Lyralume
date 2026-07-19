@@ -7,6 +7,7 @@ import path from 'node:path';
 import { LibraryDatabase } from '../library/database.js';
 import { LibraryService } from '../library/service.js';
 import { logger } from '../logging.js';
+import { TrackWriteBusyError, TrackWriteCoordinator } from '../track-write-coordinator.js';
 import { Kid3Adapter, Kid3Error } from './kid3.js';
 import { LrclibClient, LrclibError } from './lrclib.js';
 import { rankLyricsCandidates } from './matching.js';
@@ -30,7 +31,6 @@ function taskError(code: OnlineLyricsErrorCode, message: string): OnlineLyricsTa
 }
 
 export class OnlineLyricsService {
-  private readonly activeTagWrites = new Set<string>();
   private readonly initializedTasks = new Set<string>();
 
   constructor(
@@ -38,6 +38,7 @@ export class OnlineLyricsService {
     private readonly library: LibraryService,
     private readonly lrclib: LrclibClient,
     private readonly kid3: Kid3Adapter,
+    private readonly trackWrites = new TrackWriteCoordinator(),
   ) {}
 
   getTask(trackId: string): OnlineLyricsTask {
@@ -69,6 +70,7 @@ export class OnlineLyricsService {
     if (!track) return this.getTask(trackId);
     let task = this.update(this.getTask(trackId), {
       status: 'querying',
+      source: 'lrclib',
       candidates: [],
       selectedCandidateId: undefined,
       lrcFileName: undefined,
@@ -84,7 +86,11 @@ export class OnlineLyricsService {
       }
       const candidates = rankLyricsCandidates(track, records);
       if (candidates.length === 0) {
-        return this.fail(task, 'missing_synced_lyrics', '找到了歌曲，但结果不包含可用的同步歌词');
+        return this.fail(
+          task,
+          'missing_synced_lyrics',
+          'LRCLIB 找到了歌曲，但结果不包含可用的同步歌词',
+        );
       }
       const recommended = candidates.find((candidate) => candidate.recommended);
       task = this.update(task, {
@@ -103,7 +109,7 @@ export class OnlineLyricsService {
           error.message,
         );
       }
-      return this.fail(task, 'service_error', '在线歌词查询失败，请稍后重试');
+      return this.fail(task, 'service_error', 'LRCLIB 查询失败，请稍后重试');
     }
   }
 
@@ -162,7 +168,7 @@ export class OnlineLyricsService {
     if (!candidate && (!track.lrcPath || task.lrcSaveStatus !== 'saved')) {
       return this.fail(task, 'invalid_request', '请先保存在线歌词，再写入音频标签');
     }
-    if (this.activeTagWrites.has(trackId)) {
+    if (this.trackWrites.isBusy(trackId)) {
       return {
         ...task,
         error: taskError('write_in_progress', '这首歌曲已有标签写入任务正在运行'),
@@ -170,7 +176,6 @@ export class OnlineLyricsService {
       };
     }
 
-    this.activeTagWrites.add(trackId);
     task = this.update(task, {
       status: 'writing_tag',
       selectedCandidateId: candidateId ?? task.selectedCandidateId,
@@ -179,8 +184,12 @@ export class OnlineLyricsService {
     });
     logger.info(`[task:${task.id}] Writing synchronized lyrics with kid3-cli`);
     try {
-      if (candidate) await this.kid3.writeLyricsAndVerify(track.filePath, candidate.syncedLyrics);
-      else await this.kid3.writeAndVerify(track.filePath, track.lrcPath as string);
+      await this.trackWrites.run(trackId, async () => {
+        if (candidate) {
+          await this.kid3.writeLyricsAndVerify(track.filePath, candidate.syncedLyrics, 'Lyralume / LRCLIB');
+        }
+        else await this.kid3.writeAndVerify(track.filePath, track.lrcPath as string);
+      });
       this.database.setTrackEmbeddedLyrics(trackId, true);
       this.library.refreshSnapshot();
       task = this.update(task, {
@@ -191,6 +200,9 @@ export class OnlineLyricsService {
       logger.info(`[task:${task.id}] Kid3 write and readback verification completed`);
       return task;
     } catch (error) {
+      if (error instanceof TrackWriteBusyError) {
+        return this.fail(task, 'write_in_progress', error.message, { tagWriteStatus: 'failed' });
+      }
       if (error instanceof Kid3Error) {
         const code = error.kind === 'not_found'
           ? 'kid3_not_found'
@@ -198,8 +210,6 @@ export class OnlineLyricsService {
         return this.fail(task, code, error.message, { tagWriteStatus: 'failed' });
       }
       return this.fail(task, 'kid3_failed', '同步歌词标签写入失败', { tagWriteStatus: 'failed' });
-    } finally {
-      this.activeTagWrites.delete(trackId);
     }
   }
 

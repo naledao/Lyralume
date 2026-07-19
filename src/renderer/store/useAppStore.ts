@@ -2,6 +2,12 @@ import { create } from 'zustand';
 import type {
   LibraryRoot,
   LibrarySnapshot,
+  LocalLyricsDraftUpdate,
+  LocalLyricsModelSettings,
+  LocalLyricsProofreadProgress,
+  LocalLyricsProofreadResult,
+  LocalLyricsStartOptions,
+  LocalLyricsTask,
   LyricsStatus,
   OnlineLyricsTask,
   ScanProgress,
@@ -27,9 +33,23 @@ interface AppState {
   lyricsStatus: LyricsStatus;
   lyricLines: LyricLine[];
   lyricOffsetMs: number;
+  lyricsSource: 'lrc' | 'embedded' | null;
+  lyricsRevision: string | null;
+  lyricTimingWriteBusy: boolean;
+  lyricTimingWriteError: string | null;
+  lyricTimingWriteMessage: string | null;
   lyricsError: string | null;
   onlineLyricsTask: OnlineLyricsTask | null;
   onlineLyricsBusy: boolean;
+  localLyricsTask: LocalLyricsTask | null;
+  localLyricsTasks: Record<string, LocalLyricsTask>;
+  localLyricsBusy: boolean;
+  localLyricsProofreadBusy: boolean;
+  localLyricsProofreadError: string | null;
+  localLyricsProofreadProgress: Record<string, LocalLyricsProofreadProgress[]>;
+  localLyricsModelSettings: LocalLyricsModelSettings | null;
+  localLyricsModelSettingsBusy: boolean;
+  localLyricsModelSettingsError: string | null;
   visualsEnabled: boolean;
   initialize(): Promise<void>;
   applySnapshot(snapshot: LibrarySnapshot): void;
@@ -53,6 +73,24 @@ interface AppState {
   searchOnlineLyrics(): Promise<void>;
   saveOnlineLyrics(candidateId: number, overwriteExisting?: boolean): Promise<void>;
   writeOnlineLyricsTag(candidateId?: number): Promise<OnlineLyricsTask | null>;
+  loadLocalLyricsTask(trackId: string): Promise<void>;
+  loadLocalLyricsModelSettings(): Promise<void>;
+  chooseLocalUvrModel(): Promise<void>;
+  resetLocalUvrModel(): Promise<void>;
+  applyLocalLyricsTask(task: LocalLyricsTask): void;
+  applyLocalLyricsProofreadProgress(progress: LocalLyricsProofreadProgress): void;
+  startLocalLyrics(options?: LocalLyricsStartOptions): Promise<void>;
+  cancelLocalLyrics(): Promise<void>;
+  proofreadLocalLyrics(
+    update: LocalLyricsDraftUpdate,
+  ): Promise<LocalLyricsProofreadResult | null>;
+  saveLocalLyricsDraft(update: LocalLyricsDraftUpdate): Promise<LocalLyricsTask | null>;
+  confirmLocalLyricsLrc(
+    update: LocalLyricsDraftUpdate,
+    overwriteExisting?: boolean,
+  ): Promise<LocalLyricsTask | null>;
+  writeLocalLyricsTag(update: LocalLyricsDraftUpdate): Promise<LocalLyricsTask | null>;
+  writeAdjustedLyricTiming(): Promise<boolean>;
   adjustLyricOffset(deltaMs: number): void;
   resetLyricOffset(): void;
   toggleVisuals(): void;
@@ -91,6 +129,35 @@ function failedOnlineTask(
   };
 }
 
+function failedLocalTask(
+  trackId: string,
+  current: LocalLyricsTask | null,
+  message: string,
+): LocalLyricsTask {
+  const now = Date.now();
+  return {
+    ...(current ?? {
+      id: `local-${trackId}`,
+      trackId,
+      status: 'idle',
+      stage: 'pending',
+      progress: 0,
+      message,
+      draftLines: [],
+      draftOffsetMs: 0,
+      lowConfidenceCount: 0,
+      lrcSaveStatus: 'not_started',
+      tagWriteStatus: 'not_started',
+      createdAt: now,
+      updatedAt: now,
+    }),
+    status: 'failed',
+    message,
+    error: { code: 'worker_failed', message },
+    updatedAt: now,
+  };
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   tracks: [],
   roots: [],
@@ -108,9 +175,23 @@ export const useAppStore = create<AppState>((set, get) => ({
   lyricsStatus: 'idle',
   lyricLines: [],
   lyricOffsetMs: 0,
+  lyricsSource: null,
+  lyricsRevision: null,
+  lyricTimingWriteBusy: false,
+  lyricTimingWriteError: null,
+  lyricTimingWriteMessage: null,
   lyricsError: null,
   onlineLyricsTask: null,
   onlineLyricsBusy: false,
+  localLyricsTask: null,
+  localLyricsTasks: {},
+  localLyricsBusy: false,
+  localLyricsProofreadBusy: false,
+  localLyricsProofreadError: null,
+  localLyricsProofreadProgress: {},
+  localLyricsModelSettings: null,
+  localLyricsModelSettingsBusy: false,
+  localLyricsModelSettingsError: null,
   visualsEnabled: true,
 
   initialize: async () => {
@@ -130,7 +211,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   applySnapshot: (snapshot) => {
     const state = get();
     const queueIds = normalizedQueue(snapshot, state.queueIds);
-    const currentStillExists = snapshot.tracks.some((track) => track.id === state.currentTrackId);
+    const validTrackIds = new Set(snapshot.tracks.map((track) => track.id));
+    const currentStillExists = state.currentTrackId !== null && validTrackIds.has(state.currentTrackId);
+    const localLyricsTasks = Object.fromEntries(
+      Object.entries(state.localLyricsTasks).filter(([trackId]) => validTrackIds.has(trackId)),
+    );
+    const localLyricsProofreadProgress = Object.fromEntries(
+      Object.entries(state.localLyricsProofreadProgress)
+        .filter(([trackId]) => validTrackIds.has(trackId)),
+    );
     set({
       tracks: snapshot.tracks,
       roots: snapshot.roots,
@@ -143,9 +232,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       lyricsStatus: currentStillExists ? state.lyricsStatus : 'idle',
       lyricLines: currentStillExists ? state.lyricLines : [],
       lyricOffsetMs: currentStillExists ? state.lyricOffsetMs : 0,
+      lyricsSource: currentStillExists ? state.lyricsSource : null,
+      lyricsRevision: currentStillExists ? state.lyricsRevision : null,
+      lyricTimingWriteBusy: currentStillExists ? state.lyricTimingWriteBusy : false,
+      lyricTimingWriteError: currentStillExists ? state.lyricTimingWriteError : null,
+      lyricTimingWriteMessage: currentStillExists ? state.lyricTimingWriteMessage : null,
       lyricsError: currentStillExists ? state.lyricsError : null,
       onlineLyricsTask: currentStillExists ? state.onlineLyricsTask : null,
       onlineLyricsBusy: currentStillExists ? state.onlineLyricsBusy : false,
+      localLyricsTask: currentStillExists ? state.localLyricsTask : null,
+      localLyricsTasks,
+      localLyricsBusy: currentStillExists ? state.localLyricsBusy : false,
+      localLyricsProofreadBusy: currentStillExists ? state.localLyricsProofreadBusy : false,
+      localLyricsProofreadError: currentStillExists ? state.localLyricsProofreadError : null,
+      localLyricsProofreadProgress,
     });
   },
 
@@ -242,7 +342,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   selectTrack: (trackId, play = true) => {
-    if (!get().tracks.some((track) => track.id === trackId)) return;
+    const state = get();
+    if (!state.tracks.some((track) => track.id === trackId)) return;
     set({
       currentTrackId: trackId,
       isPlaying: play,
@@ -252,12 +353,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       lyricsStatus: 'loading',
       lyricLines: [],
       lyricOffsetMs: 0,
+      lyricsSource: null,
+      lyricsRevision: null,
+      lyricTimingWriteBusy: false,
+      lyricTimingWriteError: null,
+      lyricTimingWriteMessage: null,
       lyricsError: null,
       onlineLyricsTask: null,
       onlineLyricsBusy: false,
+      localLyricsTask: state.localLyricsTasks[trackId] ?? null,
+      localLyricsBusy: false,
+      localLyricsProofreadBusy: false,
+      localLyricsProofreadError: null,
     });
     void get().loadLyrics(trackId);
     void get().loadOnlineLyricsTask(trackId);
+    void get().loadLocalLyricsTask(trackId);
   },
 
   togglePlayback: () => {
@@ -302,26 +413,43 @@ export const useAppStore = create<AppState>((set, get) => ({
       const document = await window.lyralume.lyrics.load(trackId);
       if (get().currentTrackId !== trackId) return;
       if (document.status === 'missing') {
-        set({ lyricsStatus: 'missing', lyricLines: [], lyricOffsetMs: 0 });
+        set({
+          lyricsStatus: 'missing',
+          lyricLines: [],
+          lyricOffsetMs: 0,
+          lyricsSource: null,
+          lyricsRevision: null,
+        });
         return;
       }
       if (document.status === 'error' || !document.raw) {
         set({
           lyricsStatus: 'error',
           lyricLines: [],
+          lyricsSource: null,
+          lyricsRevision: null,
           lyricsError: document.message ?? '歌词无法读取',
         });
         return;
       }
       const parsed = parseLrc(document.raw);
       if (parsed.lines.length === 0) {
-        set({ lyricsStatus: 'error', lyricLines: [], lyricsError: '歌词中没有有效时间戳' });
+        set({
+          lyricsStatus: 'error',
+          lyricLines: [],
+          lyricOffsetMs: 0,
+          lyricsSource: null,
+          lyricsRevision: null,
+          lyricsError: '歌词中没有有效时间戳',
+        });
         return;
       }
       set({
         lyricsStatus: 'loaded',
         lyricLines: parsed.lines,
         lyricOffsetMs: parsed.sourceOffsetMs,
+        lyricsSource: document.source ?? null,
+        lyricsRevision: document.revision ?? null,
         lyricsError: null,
       });
     } catch (error) {
@@ -329,6 +457,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       set({
         lyricsStatus: 'error',
         lyricLines: [],
+        lyricsSource: null,
+        lyricsRevision: null,
         lyricsError: error instanceof Error ? error.message : '歌词载入失败',
       });
     }
@@ -351,6 +481,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       onlineLyricsTask: {
         ...(state.onlineLyricsTask ?? emptyOnlineTask(trackId)),
         status: 'querying',
+        source: 'lrclib',
         candidates: [],
         selectedCandidateId: undefined,
         lrcFileName: undefined,
@@ -449,8 +580,289 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  adjustLyricOffset: (deltaMs) => set((state) => ({ lyricOffsetMs: state.lyricOffsetMs + deltaMs })),
-  resetLyricOffset: () => set({ lyricOffsetMs: 0 }),
+  loadLocalLyricsTask: async (trackId) => {
+    try {
+      const task = await window.lyralume.lyrics.getLocalTask(trackId);
+      set((state) => ({
+        localLyricsTasks: { ...state.localLyricsTasks, [trackId]: task },
+        ...(state.currentTrackId === trackId ? { localLyricsTask: task } : {}),
+      }));
+    } catch {
+      if (get().currentTrackId === trackId) set({ localLyricsTask: null });
+    }
+  },
+
+  loadLocalLyricsModelSettings: async () => {
+    set({ localLyricsModelSettingsBusy: true, localLyricsModelSettingsError: null });
+    try {
+      const settings = await window.lyralume.lyrics.getLocalModelSettings();
+      set({ localLyricsModelSettings: settings });
+    } catch (error) {
+      set({
+        localLyricsModelSettingsError: error instanceof Error
+          ? error.message
+          : 'UVR 模型设置加载失败',
+      });
+    } finally {
+      set({ localLyricsModelSettingsBusy: false });
+    }
+  },
+
+  chooseLocalUvrModel: async () => {
+    if (get().localLyricsModelSettingsBusy) return;
+    set({ localLyricsModelSettingsBusy: true, localLyricsModelSettingsError: null });
+    try {
+      const settings = await window.lyralume.lyrics.chooseLocalUvrModel();
+      if (settings) set({ localLyricsModelSettings: settings });
+    } catch (error) {
+      set({
+        localLyricsModelSettingsError: error instanceof Error
+          ? error.message
+          : '自定义 UVR 模型选择失败',
+      });
+    } finally {
+      set({ localLyricsModelSettingsBusy: false });
+    }
+  },
+
+  resetLocalUvrModel: async () => {
+    if (get().localLyricsModelSettingsBusy) return;
+    set({ localLyricsModelSettingsBusy: true, localLyricsModelSettingsError: null });
+    try {
+      const settings = await window.lyralume.lyrics.resetLocalUvrModel();
+      set({ localLyricsModelSettings: settings });
+    } catch (error) {
+      set({
+        localLyricsModelSettingsError: error instanceof Error
+          ? error.message
+          : '恢复默认 UVR 模型失败',
+      });
+    } finally {
+      set({ localLyricsModelSettingsBusy: false });
+    }
+  },
+
+  applyLocalLyricsTask: (task) => {
+    set((state) => ({
+      localLyricsTasks: { ...state.localLyricsTasks, [task.trackId]: task },
+      ...(state.currentTrackId === task.trackId ? { localLyricsTask: task } : {}),
+    }));
+  },
+
+  applyLocalLyricsProofreadProgress: (progress) => {
+    set((state) => {
+      const current = state.localLyricsProofreadProgress[progress.trackId] ?? [];
+      const previous = current[current.length - 1];
+      if (
+        previous?.stage === progress.stage
+        && previous.message === progress.message
+        && previous.detail === progress.detail
+      ) return state;
+      return {
+        localLyricsProofreadProgress: {
+          ...state.localLyricsProofreadProgress,
+          [progress.trackId]: [...current, progress].slice(-40),
+        },
+      };
+    });
+  },
+
+  startLocalLyrics: async (options = {}) => {
+    const trackId = get().currentTrackId;
+    if (!trackId || get().localLyricsBusy) return;
+    set({ localLyricsBusy: true });
+    try {
+      const task = await window.lyralume.lyrics.startLocal(trackId, options);
+      set((state) => ({
+        localLyricsTasks: { ...state.localLyricsTasks, [trackId]: task },
+        ...(state.currentTrackId === trackId ? { localLyricsTask: task } : {}),
+      }));
+    } catch (error) {
+      if (get().currentTrackId === trackId) {
+        set({
+          localLyricsTask: failedLocalTask(
+            trackId,
+            get().localLyricsTask,
+            error instanceof Error ? error.message : '本地歌词任务启动失败',
+          ),
+        });
+      }
+    } finally {
+      if (get().currentTrackId === trackId) set({ localLyricsBusy: false });
+    }
+  },
+
+  cancelLocalLyrics: async () => {
+    const trackId = get().currentTrackId;
+    if (!trackId || get().localLyricsBusy) return;
+    set({ localLyricsBusy: true });
+    try {
+      const task = await window.lyralume.lyrics.cancelLocal(trackId);
+      if (get().currentTrackId === trackId) set({ localLyricsTask: task });
+    } finally {
+      if (get().currentTrackId === trackId) set({ localLyricsBusy: false });
+    }
+  },
+
+  proofreadLocalLyrics: async (update) => {
+    const trackId = get().currentTrackId;
+    if (!trackId || get().localLyricsBusy || get().localLyricsProofreadBusy) return null;
+    set((state) => ({
+      localLyricsProofreadBusy: true,
+      localLyricsProofreadError: null,
+      localLyricsProofreadProgress: {
+        ...state.localLyricsProofreadProgress,
+        [trackId]: [],
+      },
+    }));
+    try {
+      const result = await window.lyralume.lyrics.proofreadLocal(trackId, update);
+      return get().currentTrackId === trackId ? result : null;
+    } catch (error) {
+      if (get().currentTrackId === trackId) {
+        set({
+          localLyricsProofreadError: error instanceof Error
+            ? error.message
+            : 'Codex 歌词校对失败',
+        });
+      }
+      return null;
+    } finally {
+      if (get().currentTrackId === trackId) set({ localLyricsProofreadBusy: false });
+    }
+  },
+
+  saveLocalLyricsDraft: async (update) => {
+    const trackId = get().currentTrackId;
+    if (!trackId || get().localLyricsBusy) return null;
+    set({ localLyricsBusy: true });
+    try {
+      const task = await window.lyralume.lyrics.saveLocalDraft(trackId, update);
+      if (get().currentTrackId === trackId) set({ localLyricsTask: task });
+      return task;
+    } catch (error) {
+      if (get().currentTrackId !== trackId) return null;
+      const task = failedLocalTask(
+        trackId,
+        get().localLyricsTask,
+        error instanceof Error ? error.message : '歌词草稿保存失败',
+      );
+      set({ localLyricsTask: task });
+      return task;
+    } finally {
+      if (get().currentTrackId === trackId) set({ localLyricsBusy: false });
+    }
+  },
+
+  confirmLocalLyricsLrc: async (update, overwriteExisting = false) => {
+    const trackId = get().currentTrackId;
+    if (!trackId || get().localLyricsBusy) return null;
+    set({ localLyricsBusy: true });
+    try {
+      const task = await window.lyralume.lyrics.confirmLocalLrc(
+        trackId,
+        update,
+        overwriteExisting,
+      );
+      if (get().currentTrackId === trackId) {
+        set({ localLyricsTask: task });
+        if (task.lrcSaveStatus === 'saved') await get().loadLyrics(trackId);
+      }
+      return task;
+    } catch (error) {
+      if (get().currentTrackId !== trackId) return null;
+      const task = failedLocalTask(
+        trackId,
+        get().localLyricsTask,
+        error instanceof Error ? error.message : '正式 LRC 保存失败',
+      );
+      set({ localLyricsTask: task });
+      return task;
+    } finally {
+      if (get().currentTrackId === trackId) set({ localLyricsBusy: false });
+    }
+  },
+
+  writeLocalLyricsTag: async (update) => {
+    const trackId = get().currentTrackId;
+    if (!trackId || get().localLyricsBusy) return null;
+    set({ localLyricsBusy: true });
+    try {
+      const task = await window.lyralume.lyrics.writeLocalTag(trackId, update);
+      if (get().currentTrackId === trackId) {
+        set({ localLyricsTask: task });
+        if (task.tagWriteStatus === 'verified') await get().loadLyrics(trackId);
+      }
+      return task;
+    } catch (error) {
+      if (get().currentTrackId !== trackId) return null;
+      const task = failedLocalTask(
+        trackId,
+        get().localLyricsTask,
+        error instanceof Error ? error.message : '同步歌词标签写入失败',
+      );
+      set({ localLyricsTask: task });
+      return task;
+    } finally {
+      if (get().currentTrackId === trackId) set({ localLyricsBusy: false });
+    }
+  },
+
+  writeAdjustedLyricTiming: async () => {
+    const state = get();
+    const trackId = state.currentTrackId;
+    const sourceRevision = state.lyricsRevision;
+    if (
+      !trackId
+      || !sourceRevision
+      || state.lyricsStatus !== 'loaded'
+      || state.lyricTimingWriteBusy
+    ) return false;
+    const offsetMs = state.lyricOffsetMs;
+    set({
+      lyricTimingWriteBusy: true,
+      lyricTimingWriteError: null,
+      lyricTimingWriteMessage: null,
+    });
+    try {
+      const result = await window.lyralume.lyrics.writeAdjustedTiming(
+        trackId,
+        offsetMs,
+        sourceRevision,
+      );
+      if (get().currentTrackId !== trackId) return true;
+      await get().loadLyrics(trackId);
+      if (get().currentTrackId === trackId) {
+        const signed = result.appliedOffsetMs > 0 ? '+' : '';
+        set({
+          lyricTimingWriteMessage: `已将 ${signed}${(result.appliedOffsetMs / 1000).toFixed(1)}s 应用到 ${result.lineCount} 行并写入原音频`,
+        });
+      }
+      return true;
+    } catch (error) {
+      if (get().currentTrackId === trackId) {
+        set({
+          lyricTimingWriteError: error instanceof Error
+            ? error.message
+            : '校正后的同步歌词写入失败',
+        });
+      }
+      return false;
+    } finally {
+      if (get().currentTrackId === trackId) set({ lyricTimingWriteBusy: false });
+    }
+  },
+
+  adjustLyricOffset: (deltaMs) => set((state) => ({
+    lyricOffsetMs: Math.max(-300_000, Math.min(300_000, state.lyricOffsetMs + deltaMs)),
+    lyricTimingWriteError: null,
+    lyricTimingWriteMessage: null,
+  })),
+  resetLyricOffset: () => set({
+    lyricOffsetMs: 0,
+    lyricTimingWriteError: null,
+    lyricTimingWriteMessage: null,
+  }),
   toggleVisuals: () => set((state) => ({ visualsEnabled: !state.visualsEnabled })),
 }));
 

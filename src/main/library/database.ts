@@ -3,6 +3,7 @@ import path from 'node:path';
 import type {
   LibraryRoot,
   LibrarySnapshot,
+  LocalLyricsTask,
   OnlineLyricsTask,
   Track,
   TrackMetadataUpdate,
@@ -69,6 +70,7 @@ export class LibraryDatabase {
         modified_at INTEGER NOT NULL,
         lrc_path TEXT,
         has_embedded_lyrics INTEGER NOT NULL DEFAULT 0,
+        prefer_embedded_lyrics INTEGER NOT NULL DEFAULT 0,
         artwork_mime TEXT,
         artwork BLOB,
         updated_at INTEGER NOT NULL,
@@ -96,6 +98,15 @@ export class LibraryDatabase {
         updated_at INTEGER NOT NULL,
         FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
       );
+
+      CREATE TABLE IF NOT EXISTS local_lyrics_tasks (
+        track_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
+      );
     `);
 
     const trackColumns = new Set(
@@ -114,6 +125,11 @@ export class LibraryDatabase {
     if (!trackColumns.has('has_embedded_lyrics')) {
       this.database.exec(
         'ALTER TABLE tracks ADD COLUMN has_embedded_lyrics INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    if (!trackColumns.has('prefer_embedded_lyrics')) {
+      this.database.exec(
+        'ALTER TABLE tracks ADD COLUMN prefer_embedded_lyrics INTEGER NOT NULL DEFAULT 0',
       );
     }
   }
@@ -222,7 +238,7 @@ export class LibraryDatabase {
   getTrackLocation(id: string): StoredTrackLocation | undefined {
     const row = this.database
       .prepare(
-        `SELECT id, file_path, lrc_path,
+        `SELECT id, file_path, lrc_path, prefer_embedded_lyrics,
                 COALESCE(NULLIF(title_override, ''), title) AS title,
                 COALESCE(NULLIF(artist_override, ''), artist) AS artist,
                 COALESCE(NULLIF(album_override, ''), album) AS album,
@@ -233,6 +249,7 @@ export class LibraryDatabase {
         id: string;
         file_path: string;
         lrc_path: string | null;
+        prefer_embedded_lyrics: number;
         title: string;
         artist: string;
         album: string;
@@ -243,6 +260,7 @@ export class LibraryDatabase {
       id: row.id,
       filePath: row.file_path,
       lrcPath: row.lrc_path,
+      preferEmbeddedLyrics: Boolean(row.prefer_embedded_lyrics),
       title: row.title,
       artist: row.artist,
       album: row.album,
@@ -252,7 +270,9 @@ export class LibraryDatabase {
 
   setTrackLrcPath(id: string, lrcPath: string): boolean {
     const result = this.database
-      .prepare('UPDATE tracks SET lrc_path = ?, updated_at = ? WHERE id = ?')
+      .prepare(
+        'UPDATE tracks SET lrc_path = ?, prefer_embedded_lyrics = 0, updated_at = ? WHERE id = ?',
+      )
       .run(lrcPath, Date.now(), id);
     return result.changes === 1;
   }
@@ -261,6 +281,13 @@ export class LibraryDatabase {
     const result = this.database
       .prepare('UPDATE tracks SET has_embedded_lyrics = ?, updated_at = ? WHERE id = ?')
       .run(hasEmbeddedLyrics ? 1 : 0, Date.now(), id);
+    return result.changes === 1;
+  }
+
+  setTrackPreferEmbeddedLyrics(id: string, preferEmbeddedLyrics: boolean): boolean {
+    const result = this.database
+      .prepare('UPDATE tracks SET prefer_embedded_lyrics = ?, updated_at = ? WHERE id = ?')
+      .run(preferEmbeddedLyrics ? 1 : 0, Date.now(), id);
     return result.changes === 1;
   }
 
@@ -361,6 +388,32 @@ export class LibraryDatabase {
            updated_at = excluded.updated_at`,
       )
       .run(task.trackId, task.status, JSON.stringify(task), task.updatedAt);
+  }
+
+  getLocalLyricsTask(trackId: string): LocalLyricsTask | undefined {
+    const row = this.database
+      .prepare('SELECT payload_json FROM local_lyrics_tasks WHERE track_id = ?')
+      .get(trackId) as { payload_json: string } | undefined;
+    if (!row) return undefined;
+    try {
+      return JSON.parse(row.payload_json) as LocalLyricsTask;
+    } catch {
+      return undefined;
+    }
+  }
+
+  saveLocalLyricsTask(task: LocalLyricsTask): void {
+    this.database
+      .prepare(
+        `INSERT INTO local_lyrics_tasks(track_id, task_id, status, payload_json, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(track_id) DO UPDATE SET
+           task_id = excluded.task_id,
+           status = excluded.status,
+           payload_json = excluded.payload_json,
+           updated_at = excluded.updated_at`,
+      )
+      .run(task.trackId, task.id, task.status, JSON.stringify(task), task.updatedAt);
   }
 
   getArtwork(id: string): StoredArtwork | undefined {

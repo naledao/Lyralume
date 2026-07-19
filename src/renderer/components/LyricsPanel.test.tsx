@@ -1,7 +1,14 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { OnlineLyricsCandidate, Track } from '../../shared/contracts';
-import { CandidateCard } from './LyricsPanel';
+import { useAppStore } from '../store/useAppStore';
+import { CandidateCard, LyricsPanel } from './LyricsPanel';
+
+Element.prototype.scrollIntoView = vi.fn();
+
+afterEach(() => {
+  cleanup();
+});
 
 const track: Track = {
   id: '999999999999999999999999',
@@ -62,5 +69,40 @@ describe('CandidateCard metadata actions', () => {
     expect(onFillTitle).toHaveBeenCalledTimes(1);
     expect(onFillArtist).toHaveBeenCalledTimes(1);
     expect(onFillAlbum).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('LyricsPanel Codex progress', () => {
+  it('renders a selected track when no Codex workflow events have been recorded', () => {
+    useAppStore.setState({
+      tracks: [track],
+      currentTrackId: track.id,
+      lyricsStatus: 'missing',
+      localLyricsProofreadProgress: {},
+    });
+
+    expect(() => render(<LyricsPanel />)).not.toThrow();
+  });
+
+  it('offers an explicit audio-tag write after previewing an offset', () => {
+    useAppStore.setState({
+      tracks: [{ ...track, hasLyrics: true }],
+      currentTrackId: track.id,
+      lyricsStatus: 'loaded',
+      lyricLines: [{ id: '1', time: 2, text: '歌词' }],
+      lyricOffsetMs: -2_000,
+      lyricsSource: 'lrc',
+      lyricsRevision: 'd'.repeat(64),
+      lyricTimingWriteBusy: false,
+      lyricTimingWriteError: null,
+      lyricTimingWriteMessage: null,
+      localLyricsProofreadProgress: {},
+    });
+
+    render(<LyricsPanel />);
+
+    expect(screen.getByRole('button', { name: '应用并写入音频' })).toBeEnabled();
+    expect(screen.getByText('-2.0s')).toBeVisible();
+    expect(screen.getByText('调整后写入同步歌词标签')).toBeVisible();
   });
 });

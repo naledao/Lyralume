@@ -22,6 +22,10 @@ export function App() {
   const initialize = useAppStore((state) => state.initialize);
   const applySnapshot = useAppStore((state) => state.applySnapshot);
   const setScanProgress = useAppStore((state) => state.setScanProgress);
+  const applyLocalLyricsTask = useAppStore((state) => state.applyLocalLyricsTask);
+  const applyLocalLyricsProofreadProgress = useAppStore(
+    (state) => state.applyLocalLyricsProofreadProgress,
+  );
   const chooseDirectory = useAppStore((state) => state.chooseDirectory);
   const importDropped = useAppStore((state) => state.importDropped);
 
@@ -30,11 +34,23 @@ export function App() {
     void window.lyralume.app.getVersion().then(setVersion);
     const offChanged = window.lyralume.library.onChanged(applySnapshot);
     const offProgress = window.lyralume.library.onScanProgress(setScanProgress);
+    const offLocalTask = window.lyralume.lyrics.onLocalTaskChanged(applyLocalLyricsTask);
+    const offLocalProofread = window.lyralume.lyrics.onLocalProofreadProgress(
+      applyLocalLyricsProofreadProgress,
+    );
     return () => {
       offChanged();
       offProgress();
+      offLocalTask();
+      offLocalProofread();
     };
-  }, [applySnapshot, initialize, setScanProgress]);
+  }, [
+    applyLocalLyricsProofreadProgress,
+    applyLocalLyricsTask,
+    applySnapshot,
+    initialize,
+    setScanProgress,
+  ]);
 
   const filteredTracks = useMemo(() => {
     const term = query.trim().toLocaleLowerCase();

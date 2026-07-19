@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LibraryDatabase } from '../library/database';
 import { LibraryService } from '../library/service';
 import type { ScannedTrack } from '../library/types';
+import { TrackWriteCoordinator } from '../track-write-coordinator';
 import { Kid3Adapter, Kid3Error, type ProcessRunner, type SyltReader } from './kid3';
 import { LrclibClient } from './lrclib';
 import { OnlineLyricsService } from './online-lyrics-service';
@@ -59,6 +60,7 @@ async function setup(
     library,
     new LrclibClient(fetchImplementation),
     new Kid3Adapter(path.join(directory, 'cache'), runner, syltReader),
+    new TrackWriteCoordinator(),
   );
   return { audioPath, database, service };
 }

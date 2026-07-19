@@ -98,9 +98,13 @@ function normalizeEmbeddedText(text: string): string {
   return text.replace(/^[\r\n]+/, '').trim();
 }
 
-function lyricsMatch(expected: string, actual: EmbeddedSyncedLyrics[]): boolean {
+function lyricsMatch(
+  expected: string,
+  actual: EmbeddedSyncedLyrics[],
+  descriptor = 'Lyralume / LRCLIB',
+): boolean {
   const expectedLines = parseLrc(expected).lines;
-  const frame = actual.find((lyrics) => lyrics.descriptor === 'Lyralume / LRCLIB')
+  const frame = actual.find((lyrics) => lyrics.descriptor === descriptor)
     ?? actual.find((lyrics) => lyrics.syncText.length > 0);
   const actualLines = frame?.syncText ?? [];
   if (expectedLines.length === 0 || expectedLines.length !== actualLines.length) return false;
@@ -118,7 +122,8 @@ const readEmbeddedSylt: SyltReader = async (audioPath) => {
 
 export async function readEmbeddedLyricsAsLrc(audioPath: string): Promise<string | undefined> {
   const frames = await readEmbeddedSylt(audioPath);
-  const frame = frames.find((lyrics) => lyrics.descriptor === 'Lyralume / LRCLIB')
+  const frame = frames.find((lyrics) => lyrics.descriptor === 'Lyralume / Time Adjusted')
+    ?? frames.find((lyrics) => lyrics.descriptor === 'Lyralume / LRCLIB')
     ?? frames.find((lyrics) => lyrics.syncText.length > 0);
   const lines = (frame?.syncText ?? []).flatMap((line) => {
     if (typeof line.timestamp !== 'number') return [];
@@ -173,7 +178,11 @@ export class Kid3Adapter {
     }
   }
 
-  async writeLyricsAndVerify(audioPath: string, syncedLyrics: string): Promise<void> {
+  async writeLyricsAndVerify(
+    audioPath: string,
+    syncedLyrics: string,
+    descriptor = 'Lyralume / LRCLIB',
+  ): Promise<void> {
     if (parseLrc(syncedLyrics).lines.length === 0) {
       throw new Kid3Error('verification', '候选歌词不包含有效的同步时间戳');
     }
@@ -184,16 +193,20 @@ export class Kid3Adapter {
     );
     try {
       await writeFile(temporaryPath, syncedLyrics, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
-      await this.writeAndVerify(audioPath, temporaryPath);
+      await this.writeAndVerify(audioPath, temporaryPath, descriptor);
     } finally {
       await rm(temporaryPath, { force: true }).catch(() => undefined);
     }
   }
 
-  async writeAndVerify(audioPath: string, lrcPath: string): Promise<void> {
+  async writeAndVerify(
+    audioPath: string,
+    lrcPath: string,
+    descriptor = 'Lyralume / LRCLIB',
+  ): Promise<void> {
     await mkdir(this.cacheRoot, { recursive: true });
     const expected = await readFile(lrcPath, 'utf8');
-    const importCommand = `set SYLT:"${quoteKid3Path(lrcPath)}" "Lyralume / LRCLIB" 2`;
+    const importCommand = `set SYLT:"${quoteKid3Path(lrcPath)}" "${descriptor}" 2`;
 
     // Kid3/id3lib creates a new SYLT frame as Latin-1 before a caller can edit
     // its fields. Import once to ensure the frame exists, switch it to UTF-16,
@@ -219,7 +232,7 @@ export class Kid3Adapter {
     } catch {
       throw new Kid3Error('verification', '无法回读刚写入的同步歌词');
     }
-    if (!lyricsMatch(expected, actual)) {
+    if (!lyricsMatch(expected, actual, descriptor)) {
       throw new Kid3Error('verification', '回读结果与已保存的 LRC 不一致');
     }
   }

@@ -1,0 +1,2 @@
+# CPU compatibility fallback; do not install into the WhisperX environment.
+audio-separator[cpu]==0.44.2

@@ -99,6 +99,32 @@ describe('LibraryDatabase', () => {
     database.close();
   });
 
+  it('persists the preference for verified embedded lyrics across rescans', async () => {
+    const { database, directory } = await createDatabase();
+    const musicPath = path.join(directory, 'track.flac');
+    const track = scannedTrack(directory, musicPath);
+    database.syncRoot(directory, [track], new Set([musicPath]));
+
+    expect(database.getTrackLocation(track.id)?.preferEmbeddedLyrics).toBe(false);
+    expect(database.setTrackPreferEmbeddedLyrics(track.id, true)).toBe(true);
+    database.syncRoot(directory, [track], new Set([musicPath]));
+
+    expect(database.getTrackLocation(track.id)?.preferEmbeddedLyrics).toBe(true);
+    database.close();
+  });
+
+  it('returns to sidecar lyrics preference when a new LRC is explicitly saved', async () => {
+    const { database, directory } = await createDatabase();
+    const musicPath = path.join(directory, 'track.mp3');
+    const track = scannedTrack(directory, musicPath);
+    database.syncRoot(directory, [track], new Set([musicPath]));
+    database.setTrackPreferEmbeddedLyrics(track.id, true);
+
+    expect(database.setTrackLrcPath(track.id, path.join(directory, 'track.lrc'))).toBe(true);
+    expect(database.getTrackLocation(track.id)?.preferEmbeddedLyrics).toBe(false);
+    database.close();
+  });
+
   it('removes a folder track without deleting its root and keeps it ignored on rescan', async () => {
     const { database, directory } = await createDatabase();
     const musicPath = path.join(directory, 'track.flac');

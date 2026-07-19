@@ -61,6 +61,128 @@ export interface OnlineLyricsTask {
   updatedAt: number;
 }
 
+export type LocalLyricsTaskStatus =
+  | 'idle'
+  | 'queued'
+  | 'separating'
+  | 'transcribing'
+  | 'compiling'
+  | 'review'
+  | 'saving_draft'
+  | 'saving_lrc'
+  | 'lrc_saved'
+  | 'writing_tag'
+  | 'completed'
+  | 'cancelled'
+  | 'failed';
+
+export type LocalLyricsStage =
+  | 'pending'
+  | 'separation'
+  | 'transcription'
+  | 'alignment'
+  | 'draft'
+  | 'confirmation';
+
+export type LocalLyricsErrorCode =
+  | 'invalid_request'
+  | 'track_not_found'
+  | 'task_in_progress'
+  | 'worker_not_configured'
+  | 'worker_start_failed'
+  | 'worker_protocol_error'
+  | 'worker_failed'
+  | 'invalid_alignment'
+  | 'invalid_draft'
+  | 'existing_lrc'
+  | 'save_failed'
+  | 'write_in_progress'
+  | 'kid3_not_found'
+  | 'kid3_failed'
+  | 'verification_failed'
+  | 'task_interrupted';
+
+export type LocalLyricsLineFlag = 'low_confidence' | 'missing_timing';
+
+export interface LocalLyricsDraftLine {
+  id: string;
+  startTime: number;
+  endTime: number;
+  text: string;
+  confidence: number | null;
+  flags: LocalLyricsLineFlag[];
+}
+
+export interface LocalLyricsTaskError {
+  code: LocalLyricsErrorCode;
+  message: string;
+  stage?: LocalLyricsStage;
+}
+
+export interface LocalLyricsTask {
+  id: string;
+  trackId: string;
+  status: LocalLyricsTaskStatus;
+  stage: LocalLyricsStage;
+  progress: number;
+  message: string;
+  language?: string;
+  draftLines: LocalLyricsDraftLine[];
+  draftOffsetMs: number;
+  lowConfidenceCount: number;
+  vocalsPlaybackUrl?: string;
+  lrcFileName?: string;
+  lrcSaveStatus: 'not_started' | 'saving' | 'saved' | 'failed';
+  tagWriteStatus: 'not_started' | 'writing' | 'verified' | 'failed';
+  error?: LocalLyricsTaskError;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface LocalLyricsStartOptions {
+  language?: string;
+  device?: 'cuda' | 'cpu';
+}
+
+export interface LocalLyricsModelSettings {
+  uvrModelSource: 'managed' | 'custom';
+  uvrModelPath: string;
+  uvrModelName: string;
+  uvrModelAvailable: boolean;
+}
+
+export interface LocalLyricsDraftUpdate {
+  lines: LocalLyricsDraftLine[];
+  offsetMs: number;
+}
+
+export interface LocalLyricsProofreadResult {
+  lines: LocalLyricsDraftLine[];
+  offsetMs: number;
+  changedLineCount: number;
+  summary: string;
+  sources: Array<{ title: string; url: string }>;
+}
+
+export type LocalLyricsProofreadProgressStage =
+  | 'preparing'
+  | 'starting'
+  | 'connected'
+  | 'searching'
+  | 'analyzing'
+  | 'validating'
+  | 'completed'
+  | 'failed';
+
+export interface LocalLyricsProofreadProgress {
+  trackId: string;
+  stage: LocalLyricsProofreadProgressStage;
+  message: string;
+  detail?: string;
+  elapsedMs: number;
+  timestamp: number;
+}
+
 export interface TrackMetadata {
   title: string;
   artist: string;
@@ -120,7 +242,15 @@ export interface LyricsDocument {
   status: 'loaded' | 'missing' | 'error';
   raw?: string;
   fileName?: string;
+  source?: 'lrc' | 'embedded';
+  revision?: string;
   message?: string;
+}
+
+export interface LyricsTimingWriteResult {
+  appliedOffsetMs: number;
+  lineCount: number;
+  source: 'lrc' | 'embedded';
 }
 
 export interface LyralumeApi {
@@ -136,10 +266,36 @@ export interface LyralumeApi {
   };
   lyrics: {
     load(trackId: string): Promise<LyricsDocument>;
+    writeAdjustedTiming(
+      trackId: string,
+      offsetMs: number,
+      sourceRevision: string,
+    ): Promise<LyricsTimingWriteResult>;
     getOnlineTask(trackId: string): Promise<OnlineLyricsTask>;
     searchOnline(trackId: string): Promise<OnlineLyricsTask>;
     saveOnline(trackId: string, candidateId: number, overwriteExisting?: boolean): Promise<OnlineLyricsTask>;
     writeTag(trackId: string, candidateId?: number): Promise<OnlineLyricsTask>;
+    getLocalTask(trackId: string): Promise<LocalLyricsTask>;
+    getLocalModelSettings(): Promise<LocalLyricsModelSettings>;
+    chooseLocalUvrModel(): Promise<LocalLyricsModelSettings | null>;
+    resetLocalUvrModel(): Promise<LocalLyricsModelSettings>;
+    startLocal(trackId: string, options?: LocalLyricsStartOptions): Promise<LocalLyricsTask>;
+    cancelLocal(trackId: string): Promise<LocalLyricsTask>;
+    proofreadLocal(
+      trackId: string,
+      update: LocalLyricsDraftUpdate,
+    ): Promise<LocalLyricsProofreadResult>;
+    saveLocalDraft(trackId: string, update: LocalLyricsDraftUpdate): Promise<LocalLyricsTask>;
+    confirmLocalLrc(
+      trackId: string,
+      update: LocalLyricsDraftUpdate,
+      overwriteExisting?: boolean,
+    ): Promise<LocalLyricsTask>;
+    writeLocalTag(trackId: string, update: LocalLyricsDraftUpdate): Promise<LocalLyricsTask>;
+    onLocalTaskChanged(callback: (task: LocalLyricsTask) => void): () => void;
+    onLocalProofreadProgress(
+      callback: (progress: LocalLyricsProofreadProgress) => void,
+    ): () => void;
   };
   app: {
     getVersion(): Promise<string>;
@@ -156,9 +312,22 @@ export const IPC_CHANNELS = {
   libraryChanged: 'library:changed',
   libraryScanProgress: 'library:scan-progress',
   lyricsLoad: 'lyrics:load',
+  lyricsWriteAdjustedTiming: 'lyrics:write-adjusted-timing',
   lyricsOnlineTask: 'lyrics:online-task',
   lyricsOnlineSearch: 'lyrics:online-search',
   lyricsOnlineSave: 'lyrics:online-save',
   lyricsWriteTag: 'lyrics:write-tag',
+  lyricsLocalTask: 'lyrics:local-task',
+  lyricsLocalModelSettings: 'lyrics:local-model-settings',
+  lyricsLocalChooseUvrModel: 'lyrics:local-choose-uvr-model',
+  lyricsLocalResetUvrModel: 'lyrics:local-reset-uvr-model',
+  lyricsLocalStart: 'lyrics:local-start',
+  lyricsLocalCancel: 'lyrics:local-cancel',
+  lyricsLocalProofread: 'lyrics:local-proofread',
+  lyricsLocalSaveDraft: 'lyrics:local-save-draft',
+  lyricsLocalConfirmLrc: 'lyrics:local-confirm-lrc',
+  lyricsLocalWriteTag: 'lyrics:local-write-tag',
+  lyricsLocalChanged: 'lyrics:local-changed',
+  lyricsLocalProofreadProgress: 'lyrics:local-proofread-progress',
   appVersion: 'app:version',
 } as const;

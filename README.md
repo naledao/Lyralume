@@ -1,6 +1,6 @@
 # Lyralume
 
-Lyralume 是面向 Windows 11 的本地音乐播放器。当前实现覆盖本地音乐库、原文件播放、同名 LRC 同步显示，以及第二阶段的 LRCLIB 在线歌词候选确认、安全保存和 Kid3 同步歌词标签写入/回读验证。
+Lyralume 是面向 Windows 11 的本地音乐播放器。当前实现覆盖本地音乐库、原文件播放、同名 LRC 同步显示、LRCLIB 在线歌词检索，以及第三阶段的本地歌词草稿任务、校对和确认写入流程。
 
 ## 开发环境
 
@@ -26,19 +26,34 @@ pnpm build        # 生成生产构建
 pnpm package:win  # 生成 Win11 x64 NSIS 安装包
 ```
 
-在线歌词查询不需要 API Key。若要使用“写入音频标签”，需单独安装 Kid3，并确保 `kid3-cli` 可以从 `PATH` 启动；Lyralume 当前不会把 Kid3 二进制打进安装包。未安装 Kid3 时，已经保存的同名 LRC 不会丢失。
+在线歌词查询通过 LRCLIB，不需要 API Key；没有匹配结果时可改用本地生成。若要使用“写入音频标签”，需单独安装 Kid3，并确保 `kid3-cli` 可以从 `PATH` 启动；Lyralume 当前不会把 Kid3 二进制打进安装包。未安装 Kid3 时，已经保存的同名 LRC 不会丢失。
+
+## 本地歌词草稿环境
+
+UVR 与 WhisperX 使用两个隔离的 Python 3.11 环境，不能安装到 Electron 渲染进程或共用同一个虚拟环境。Worker 脚本、固定的顶层依赖版本和 Windows 安装示例位于 [`workers/README.md`](workers/README.md)。默认环境位置为：
+
+```text
+%APPDATA%\Lyralume\ai\uvr\.venv\Scripts\python.exe
+%APPDATA%\Lyralume\ai\whisperx\.venv\Scripts\python.exe
+```
+
+也可用 `LYRALUME_UVR_PYTHON` 和 `LYRALUME_WHISPERX_PYTHON` 指向其他解释器；`LYRALUME_AI_DEVICE=cpu` 可把默认设备切换为 CPU。NVIDIA CUDA 是正式加速路径，CPU 是兼容回退。模型由 [Audio Separator](https://github.com/nomadkaraoke/python-audio-separator) 与 [WhisperX](https://github.com/m-bain/whisperX) 下载到应用用户数据目录，模型管理和缓存清理留在第四阶段。
+
+校对页可选调用本机已经安装并登录的 Codex CLI。Codex 会启用 live web search，按歌曲名、艺术家、专辑和草稿片段查询公开资料辅助校对，并把实际使用的 HTTPS 来源返回到界面；界面通过 `codex exec --json` 的 JSONL 事件实时显示 CLI 启动、联网检索、分析、结构校验、完成或失败流程，只展示操作摘要，不展示模型隐藏推理。Codex 可以修改歌词文字、每行开始/结束时间、整体偏移、行数、行 ID 和顺序，也可以跨行移动文字、拆行或合行。现有行保留原置信度和标记，Codex 新增的行会标记为低置信度；结果不会自动保存，并可在界面中完整撤销。Lyralume 不打包 Codex SDK 或 CLI；Windows 默认从 `PATH` 查找 npm 安装的 `codex.cmd`，再直接通过同目录的 `node.exe` 启动 `@openai/codex/bin/codex.js`，以避开 WindowsApps 执行权限问题。也可用 `LYRALUME_CODEX_PATH` 指向 Codex CLI 的 `.cmd` 或原生可执行文件。该能力与 LRCLIB 在线歌词查询相互独立。
 
 ## 安全边界
 
 - 渲染进程关闭 `nodeIntegration`，启用 `contextIsolation` 与 sandbox。
-- 文件选择、扫描、元数据、SQLite、LRC 读写、LRCLIB 请求和 Kid3 进程均在主进程中进行。
+- 文件选择、扫描、元数据、SQLite、LRC 读写、LRCLIB 请求、AI Worker 调度和 Kid3 进程均在主进程中进行。
 - 预加载层只暴露最小化的类型化 API；播放和封面通过歌曲 ID 映射到受控协议，不向渲染进程泄露音频文件绝对路径。
 - 标签写入仅通过参数数组启动 `kid3-cli`，不经过 Shell；写入前释放播放器文件句柄，写入后导出 SYLT 并与 LRC 逐行回读验证。
 - 同名 LRC 使用同目录临时文件安全落盘；已有文件必须再次明确确认才允许覆盖。
 - 单个损坏文件、LRC 或 Canvas 视觉异常均被隔离，不应导致整个播放器退出。
+- UVR 与 WhisperX 仅通过 stdin/stdout JSON Lines 通信，使用参数数组启动；GPU 阶段全局串行，已完成中间结果在失败和取消后保留。
+- Codex 校对在独立临时目录、只读沙箱和非交互模式下运行；仅开放 Codex Web Search，应用严格校验结构化结果、唯一行 ID、时间范围与顺序，以及公开 HTTPS 来源。
 
 ## 音频格式说明
 
 扫描器会把常见音频扩展名作为候选文件交给 `music-metadata` 与 Electron 媒体栈。扩展名不等于兼容性承诺；目前自动化测试只验证了程序生成的 PCM WAV 样本，正式支持范围仍需使用真实编码样本在目标 Win11 环境逐项验证。
 
-当前阶段不包含 UVR、WhisperX、CUDA 或模型下载。
+第三阶段不会自动安装 CUDA、Python、FFmpeg、AI 模型或 Kid3；这些均作为可选本地资源配置，不进入核心安装包。

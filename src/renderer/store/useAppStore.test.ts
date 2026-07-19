@@ -29,10 +29,23 @@ const api = {
   },
   lyrics: {
     load: vi.fn(),
+    writeAdjustedTiming: vi.fn(),
     getOnlineTask: vi.fn(),
     searchOnline: vi.fn(),
     saveOnline: vi.fn(),
     writeTag: vi.fn(),
+    getLocalTask: vi.fn(),
+    getLocalModelSettings: vi.fn(),
+    chooseLocalUvrModel: vi.fn(),
+    resetLocalUvrModel: vi.fn(),
+    startLocal: vi.fn(),
+    cancelLocal: vi.fn(),
+    proofreadLocal: vi.fn(),
+    saveLocalDraft: vi.fn(),
+    confirmLocalLrc: vi.fn(),
+    writeLocalTag: vi.fn(),
+    onLocalTaskChanged: vi.fn(() => () => undefined),
+    onLocalProofreadProgress: vi.fn(() => () => undefined),
   },
   app: { getVersion: vi.fn() },
 } satisfies LyralumeApi;
@@ -51,9 +64,23 @@ beforeEach(() => {
     lyricsStatus: 'idle',
     lyricLines: [],
     lyricOffsetMs: 0,
+    lyricsSource: null,
+    lyricsRevision: null,
+    lyricTimingWriteBusy: false,
+    lyricTimingWriteError: null,
+    lyricTimingWriteMessage: null,
     lyricsError: null,
     onlineLyricsTask: null,
     onlineLyricsBusy: false,
+    localLyricsTask: null,
+    localLyricsTasks: {},
+    localLyricsBusy: false,
+    localLyricsProofreadBusy: false,
+    localLyricsProofreadError: null,
+    localLyricsProofreadProgress: {},
+    localLyricsModelSettings: null,
+    localLyricsModelSettingsBusy: false,
+    localLyricsModelSettingsError: null,
     scanning: false,
     scanProgress: null,
     libraryMessage: null,
@@ -68,9 +95,70 @@ beforeEach(() => {
     tagWriteStatus: 'not_started',
     updatedAt: 1,
   });
+  api.lyrics.getLocalTask.mockResolvedValue({
+    id: 'local-333333333333333333333333',
+    trackId: '333333333333333333333333',
+    status: 'idle',
+    stage: 'pending',
+    progress: 0,
+    message: '尚未创建本地歌词草稿',
+    draftLines: [],
+    draftOffsetMs: 0,
+    lowConfidenceCount: 0,
+    lrcSaveStatus: 'not_started',
+    tagWriteStatus: 'not_started',
+    createdAt: 1,
+    updatedAt: 1,
+  });
 });
 
 describe('player store', () => {
+  it('keeps a bounded per-track Codex workflow', () => {
+    const trackId = '111111111111111111111111';
+    useAppStore.getState().applyLocalLyricsProofreadProgress({
+      trackId,
+      stage: 'searching',
+      message: '联网检索完成',
+      detail: '歌曲 歌词',
+      elapsedMs: 500,
+      timestamp: 1,
+    });
+
+    expect(useAppStore.getState().localLyricsProofreadProgress[trackId]).toEqual([
+      expect.objectContaining({ stage: 'searching', detail: '歌曲 歌词' }),
+    ]);
+  });
+
+  it('remembers a local lyrics task after switching to another track', () => {
+    const first = track('111111111111111111111111', 'One');
+    const second = track('222222222222222222222222', 'Two');
+    useAppStore.getState().applySnapshot({ tracks: [first, second], roots: [] });
+    useAppStore.setState({ currentTrackId: first.id });
+    useAppStore.getState().applyLocalLyricsTask({
+      id: '62fa754e-65f0-4148-b68b-22278102ef18',
+      trackId: first.id,
+      status: 'separating',
+      stage: 'separation',
+      progress: 0.35,
+      message: '正在分离',
+      draftLines: [],
+      draftOffsetMs: 0,
+      lowConfidenceCount: 0,
+      lrcSaveStatus: 'not_started',
+      tagWriteStatus: 'not_started',
+      createdAt: 1,
+      updatedAt: 2,
+    });
+
+    useAppStore.getState().selectTrack(second.id, false);
+
+    expect(useAppStore.getState().localLyricsTask).toBeNull();
+    expect(useAppStore.getState().localLyricsTasks[first.id]).toMatchObject({
+      status: 'separating',
+      progress: 0.35,
+    });
+  });
+
   it('keeps a stable queue and wraps at the end', () => {
     const first = track('111111111111111111111111', 'One');
     const second = track('222222222222222222222222', 'Two');
@@ -87,12 +175,58 @@ describe('player store', () => {
     api.lyrics.load.mockResolvedValue({
       status: 'loaded',
       raw: '[offset:100]\n[00:01.00]Hello',
+      source: 'lrc',
+      revision: 'a'.repeat(64),
     });
     useAppStore.getState().applySnapshot({ tracks: [item], roots: [] });
     useAppStore.getState().selectTrack(item.id);
     await vi.waitFor(() => expect(useAppStore.getState().lyricsStatus).toBe('loaded'));
     expect(useAppStore.getState().lyricLines[0].text).toBe('Hello');
     expect(useAppStore.getState().lyricOffsetMs).toBe(100);
+    expect(useAppStore.getState()).toMatchObject({
+      lyricsSource: 'lrc',
+      lyricsRevision: 'a'.repeat(64),
+    });
+  });
+
+  it('writes adjusted timing into the audio and reloads the verified embedded lyrics', async () => {
+    const item = track('888888888888888888888888', 'Adjusted');
+    useAppStore.setState({
+      tracks: [item],
+      queueIds: [item.id],
+      currentTrackId: item.id,
+      lyricsStatus: 'loaded',
+      lyricLines: [{ id: '1', time: 2, text: 'Line' }],
+      lyricOffsetMs: -2_000,
+      lyricsSource: 'lrc',
+      lyricsRevision: 'b'.repeat(64),
+    });
+    api.lyrics.writeAdjustedTiming.mockResolvedValue({
+      appliedOffsetMs: -2_000,
+      lineCount: 1,
+      source: 'lrc',
+    });
+    api.lyrics.load.mockResolvedValue({
+      status: 'loaded',
+      raw: '[00:00.000]Line',
+      source: 'embedded',
+      revision: 'c'.repeat(64),
+    });
+
+    await expect(useAppStore.getState().writeAdjustedLyricTiming()).resolves.toBe(true);
+
+    expect(api.lyrics.writeAdjustedTiming).toHaveBeenCalledWith(
+      item.id,
+      -2_000,
+      'b'.repeat(64),
+    );
+    expect(useAppStore.getState()).toMatchObject({
+      lyricOffsetMs: 0,
+      lyricsSource: 'embedded',
+      lyricTimingWriteBusy: false,
+      lyricTimingWriteError: null,
+      lyricTimingWriteMessage: '已将 -2.0s 应用到 1 行并写入原音频',
+    });
   });
 
   it('imports dropped local files through the isolated preload API', async () => {

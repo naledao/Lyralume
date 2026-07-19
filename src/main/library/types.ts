@@ -19,6 +19,7 @@ export interface StoredTrackLocation {
   id: string;
   filePath: string;
   lrcPath: string | null;
+  preferEmbeddedLyrics: boolean;
   title: string;
   artist: string;
   album: string;
