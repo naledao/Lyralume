@@ -4,18 +4,25 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   app,
   BrowserWindow,
+  ipcMain,
   net,
   protocol,
   session,
   shell,
   type WebContents,
 } from 'electron';
+import { IPC_CHANNELS } from '../shared/contracts.js';
 import { registerIpcHandlers, removeIpcHandlers } from './ipc.js';
 import { LibraryDatabase } from './library/database.js';
 import { LibraryService } from './library/service.js';
 import { LocalLyricsService } from './local-lyrics/local-lyrics-service.js';
 import { resolveLocalLyricsRuntime } from './local-lyrics/runtime.js';
 import { PythonWorkerGateway } from './local-lyrics/worker-gateway.js';
+import { BilingualLyricsService } from './lyrics/bilingual-lyrics-service.js';
+import {
+  CodexSdkBilingualTranslator,
+  CodexSdkStructuredRunner,
+} from './lyrics/codex-bilingual-translator.js';
 import { Kid3Adapter } from './lyrics/kid3.js';
 import { LyricsOffsetService } from './lyrics/lyrics-offset-service.js';
 import { LrclibClient } from './lyrics/lrclib.js';
@@ -30,6 +37,44 @@ let database: LibraryDatabase | null = null;
 let library: LibraryService | null = null;
 let onlineLyrics: OnlineLyricsService | null = null;
 let localLyrics: LocalLyricsService | null = null;
+let bilingualLyrics: BilingualLyricsService | null = null;
+let playbackFlushRequestSequence = 0;
+let quitPlaybackFlushed = false;
+let shutdownStarted = false;
+const closeAllowedWindows = new WeakSet<BrowserWindow>();
+const pendingPlaybackFlushes = new WeakMap<BrowserWindow, Promise<void>>();
+
+function requestPlaybackFlush(window: BrowserWindow): Promise<void> {
+  if (window.isDestroyed() || window.webContents.isDestroyed()) return Promise.resolve();
+  const existing = pendingPlaybackFlushes.get(window);
+  if (existing) return existing;
+
+  const requestId = `${Date.now()}-${++playbackFlushRequestSequence}`;
+  const pending = new Promise<void>((resolve) => {
+    let timeout: NodeJS.Timeout | undefined;
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      if (timeout) clearTimeout(timeout);
+      ipcMain.removeListener(IPC_CHANNELS.playbackFlushComplete, onComplete);
+      resolve();
+    };
+    const onComplete = (
+      event: Electron.IpcMainEvent,
+      completedRequestId: unknown,
+    ): void => {
+      if (event.sender !== window.webContents || completedRequestId !== requestId) return;
+      finish();
+    };
+    ipcMain.on(IPC_CHANNELS.playbackFlushComplete, onComplete);
+    timeout = setTimeout(finish, 1_500);
+    window.webContents.send(IPC_CHANNELS.playbackFlushRequested, requestId);
+  });
+  pendingPlaybackFlushes.set(window, pending);
+  void pending.finally(() => pendingPlaybackFlushes.delete(window));
+  return pending;
+}
 
 protocol.registerSchemesAsPrivileged([
   {
@@ -43,6 +88,10 @@ protocol.registerSchemesAsPrivileged([
     },
   },
 ]);
+
+if (process.env.LYRALUME_E2E_USER_DATA) {
+  app.setPath('userData', process.env.LYRALUME_E2E_USER_DATA);
+}
 
 configureLogging();
 
@@ -87,6 +136,18 @@ function createWindow(): BrowserWindow {
   });
   secureWebContents(window.webContents);
   window.once('ready-to-show', () => window.show());
+  window.on('close', (event) => {
+    if (closeAllowedWindows.has(window) || shutdownStarted) return;
+    event.preventDefault();
+    void requestPlaybackFlush(window).finally(() => {
+      if (window.isDestroyed()) return;
+      closeAllowedWindows.add(window);
+      window.close();
+    });
+  });
+  window.on('query-session-end', () => {
+    void requestPlaybackFlush(window);
+  });
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null;
   });
@@ -116,12 +177,12 @@ function registerMediaProtocol(): void {
       if (!/^[a-f0-9]{24}$/.test(id)) return new Response('Not found', { status: 404 });
       const artwork = database.getArtwork(id);
       if (!artwork) return new Response('Not found', { status: 404 });
-      return new Response(new Uint8Array(artwork.data), {
+      return allowRendererMediaAccess(new Response(new Uint8Array(artwork.data), {
         headers: {
           'Content-Type': artwork.mime,
           'Cache-Control': 'private, max-age=3600',
         },
-      });
+      }));
     }
     if (url.hostname === 'task-vocals') {
       const vocalsPath = localLyrics?.getVocalsPath(id);
@@ -136,7 +197,7 @@ function registerMediaProtocol(): void {
 }
 
 async function start(): Promise<void> {
-  const userDataPath = process.env.LYRALUME_E2E_USER_DATA || app.getPath('userData');
+  const userDataPath = app.getPath('userData');
   database = new LibraryDatabase(path.join(userDataPath, 'library.db'));
   const kid3 = new Kid3Adapter(path.join(userDataPath, 'cache', 'kid3'));
   const trackWrites = new TrackWriteCoordinator();
@@ -165,6 +226,15 @@ async function start(): Promise<void> {
     localRuntime.options,
     trackWrites,
   );
+  bilingualLyrics = new BilingualLyricsService(
+    database,
+    library,
+    kid3,
+    new CodexSdkBilingualTranslator(new CodexSdkStructuredRunner({
+      packagedResourcesPath: app.isPackaged ? process.resourcesPath : undefined,
+    })),
+    trackWrites,
+  );
   const lyricsOffset = new LyricsOffsetService(database, library, kid3, trackWrites);
   registerMediaProtocol();
   registerIpcHandlers(
@@ -173,6 +243,7 @@ async function start(): Promise<void> {
     library,
     onlineLyrics,
     localLyrics,
+    bilingualLyrics,
     lyricsOffset,
   );
   mainWindow = createWindow();
@@ -211,16 +282,32 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', (event) => {
+  if (!quitPlaybackFlushed && mainWindow && !mainWindow.isDestroyed()) {
+    event.preventDefault();
+    void requestPlaybackFlush(mainWindow).finally(() => {
+      quitPlaybackFlushed = true;
+      app.quit();
+    });
+    return;
+  }
   if (!library || !database) return;
   event.preventDefault();
+  if (shutdownStarted) return;
+  shutdownStarted = true;
   const activeLibrary = library;
   const activeDatabase = database;
   const activeLocalLyrics = localLyrics;
+  const activeBilingualLyrics = bilingualLyrics;
   library = null;
   database = null;
   onlineLyrics = null;
   localLyrics = null;
-  void Promise.all([activeLibrary.close(), activeLocalLyrics?.close()]).finally(() => {
+  bilingualLyrics = null;
+  void Promise.all([
+    activeLibrary.close(),
+    activeLocalLyrics?.close(),
+    activeBilingualLyrics?.close(),
+  ]).finally(() => {
     removeIpcHandlers();
     activeDatabase.close();
     app.exit(0);

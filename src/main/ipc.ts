@@ -2,13 +2,17 @@ import path from 'node:path';
 import { app, dialog, ipcMain, type BrowserWindow, type OpenDialogOptions } from 'electron';
 import {
   IPC_CHANNELS,
+  isTrackLanguage,
+  type BilingualLyricsStartOptions,
   type LocalLyricsDraftUpdate,
   type LocalLyricsStartOptions,
   type LyricsDocument,
+  type PlaybackCheckpoint,
   type TrackMetadataUpdate,
 } from '../shared/contracts.js';
 import { LibraryDatabase } from './library/database.js';
 import { LibraryService } from './library/service.js';
+import { BilingualLyricsService } from './lyrics/bilingual-lyrics-service.js';
 import { LyricsOffsetService } from './lyrics/lyrics-offset-service.js';
 import { loadPreferredLyricsSource } from './lyrics/lyrics-source.js';
 import { OnlineLyricsService } from './lyrics/online-lyrics-service.js';
@@ -16,6 +20,17 @@ import { LocalLyricsService } from './local-lyrics/local-lyrics-service.js';
 import { logger } from './logging.js';
 
 const TRACK_ID_PATTERN = /^[a-f0-9]{24}$/;
+const PLAYBACK_CHECKPOINT_REASONS = new Set<PlaybackCheckpoint['reason']>([
+  'periodic',
+  'track-selected',
+  'track-switch',
+  'pause',
+  'seek',
+  'file-operation',
+  'app-hidden',
+  'app-close',
+  'ended',
+]);
 
 export function registerIpcHandlers(
   getWindow: () => BrowserWindow | null,
@@ -23,6 +38,7 @@ export function registerIpcHandlers(
   library: LibraryService,
   onlineLyrics: OnlineLyricsService,
   localLyrics: LocalLyricsService,
+  bilingualLyrics: BilingualLyricsService,
   lyricsOffset: LyricsOffsetService,
 ): void {
   library.setListeners(
@@ -32,8 +48,21 @@ export function registerIpcHandlers(
   localLyrics.setListener((task) => {
     getWindow()?.webContents.send(IPC_CHANNELS.lyricsLocalChanged, task);
   });
+  bilingualLyrics.setListener((task) => {
+    getWindow()?.webContents.send(IPC_CHANNELS.lyricsBilingualChanged, task);
+  });
 
   ipcMain.handle(IPC_CHANNELS.librarySnapshot, () => library.getSnapshot());
+
+  ipcMain.handle(IPC_CHANNELS.playbackState, () => database.getPlaybackState());
+
+  ipcMain.handle(IPC_CHANNELS.playbackCheckpoint, (_event, checkpoint: unknown) => {
+    assertPlaybackCheckpoint(checkpoint);
+    if (!database.getTrackLocation(checkpoint.trackId)) {
+      throw new Error('音乐库中找不到这首歌曲');
+    }
+    return database.savePlaybackCheckpoint(checkpoint);
+  });
 
   ipcMain.handle(IPC_CHANNELS.libraryChooseDirectory, async () => {
     const owner = getWindow() ?? undefined;
@@ -65,6 +94,12 @@ export function registerIpcHandlers(
           throw new Error('歌曲名、艺术家和专辑必须是文本');
         }
         update[field] = candidate[field];
+      }
+      if (candidate.language !== undefined) {
+        if (candidate.language !== '' && !isTrackLanguage(candidate.language)) {
+          throw new Error('不支持的歌曲语种');
+        }
+        update.language = candidate.language;
       }
       if (Object.keys(update).length === 0) throw new Error('没有需要保存的歌曲信息');
       return library.updateTrackMetadata(trackId, update);
@@ -243,6 +278,33 @@ export function registerIpcHandlers(
     },
   );
 
+  ipcMain.handle(IPC_CHANNELS.lyricsBilingualTask, (_event, trackId: unknown) => {
+    assertTrackId(trackId);
+    return bilingualLyrics.getTask(trackId);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.lyricsBilingualStart, (_event, trackId: unknown, options: unknown) => {
+    assertTrackId(trackId);
+    if (options !== undefined && (
+      !options
+      || typeof options !== 'object'
+      || ('style' in options && !['natural', 'lyrical', 'singable'].includes(
+        String((options as { style?: unknown }).style),
+      ))
+    )) throw new Error('无效的双语译配选项');
+    return bilingualLyrics.start(trackId, (options ?? {}) as BilingualLyricsStartOptions);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.lyricsBilingualCancel, (_event, trackId: unknown) => {
+    assertTrackId(trackId);
+    return bilingualLyrics.cancel(trackId);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.lyricsBilingualWriteTag, (_event, trackId: unknown) => {
+    assertTrackId(trackId);
+    return bilingualLyrics.writeTag(trackId);
+  });
+
   ipcMain.handle(IPC_CHANNELS.appVersion, () => app.getVersion());
 }
 
@@ -254,6 +316,8 @@ export function removeIpcHandlers(): void {
     IPC_CHANNELS.libraryImportDropped,
     IPC_CHANNELS.libraryUpdateMetadata,
     IPC_CHANNELS.libraryRemoveTrack,
+    IPC_CHANNELS.playbackState,
+    IPC_CHANNELS.playbackCheckpoint,
     IPC_CHANNELS.lyricsLoad,
     IPC_CHANNELS.lyricsWriteAdjustedTiming,
     IPC_CHANNELS.lyricsOnlineTask,
@@ -270,6 +334,10 @@ export function removeIpcHandlers(): void {
     IPC_CHANNELS.lyricsLocalSaveDraft,
     IPC_CHANNELS.lyricsLocalConfirmLrc,
     IPC_CHANNELS.lyricsLocalWriteTag,
+    IPC_CHANNELS.lyricsBilingualTask,
+    IPC_CHANNELS.lyricsBilingualStart,
+    IPC_CHANNELS.lyricsBilingualCancel,
+    IPC_CHANNELS.lyricsBilingualWriteTag,
     IPC_CHANNELS.appVersion,
   ]) {
     ipcMain.removeHandler(channel);
@@ -280,6 +348,27 @@ function assertTrackId(trackId: unknown): asserts trackId is string {
   if (typeof trackId !== 'string' || !TRACK_ID_PATTERN.test(trackId)) {
     throw new Error('无效的歌曲标识');
   }
+}
+
+function assertPlaybackCheckpoint(
+  checkpoint: unknown,
+): asserts checkpoint is PlaybackCheckpoint {
+  if (!checkpoint || typeof checkpoint !== 'object') {
+    throw new Error('无效的播放进度');
+  }
+  const candidate = checkpoint as Partial<PlaybackCheckpoint>;
+  assertTrackId(candidate.trackId);
+  if (
+    !Number.isSafeInteger(candidate.positionMs)
+    || !Number.isSafeInteger(candidate.durationMs)
+    || (candidate.positionMs ?? -1) < 0
+    || (candidate.durationMs ?? -1) < 0
+    || (candidate.positionMs ?? 0) > 2_147_483_647
+    || (candidate.durationMs ?? 0) > 2_147_483_647
+    || typeof candidate.completed !== 'boolean'
+    || !candidate.reason
+    || !PLAYBACK_CHECKPOINT_REASONS.has(candidate.reason)
+  ) throw new Error('无效的播放进度');
 }
 
 function assertDraftUpdate(update: unknown): asserts update is LocalLyricsDraftUpdate {

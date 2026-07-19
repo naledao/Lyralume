@@ -24,6 +24,7 @@ function scannedTrack(rootPath: string, filePath: string): ScannedTrack {
     title: 'Track',
     artist: 'Artist',
     album: 'Album',
+    language: null,
     duration: 123.4,
     fileSize: 2048,
     modifiedAt: 42,
@@ -99,6 +100,22 @@ describe('LibraryDatabase', () => {
     database.close();
   });
 
+  it('keeps a selected language across rescans and supports clearing it', async () => {
+    const { database, directory } = await createDatabase();
+    const musicPath = path.join(directory, 'track.flac');
+    const track = scannedTrack(directory, musicPath);
+    database.syncRoot(directory, [track], new Set([musicPath]));
+
+    expect(database.setTrackMetadata(track.id, { language: 'jpn' })).toBe(true);
+    database.syncRoot(directory, [{ ...track, language: 'eng' }], new Set([musicPath]));
+    expect(database.getSnapshot().tracks[0].language).toBe('jpn');
+
+    expect(database.setTrackMetadata(track.id, { language: '' })).toBe(true);
+    database.syncRoot(directory, [{ ...track, language: 'eng' }], new Set([musicPath]));
+    expect(database.getSnapshot().tracks[0].language).toBeNull();
+    database.close();
+  });
+
   it('persists the preference for verified embedded lyrics across rescans', async () => {
     const { database, directory } = await createDatabase();
     const musicPath = path.join(directory, 'track.flac');
@@ -110,6 +127,58 @@ describe('LibraryDatabase', () => {
     database.syncRoot(directory, [track], new Set([musicPath]));
 
     expect(database.getTrackLocation(track.id)?.preferEmbeddedLyrics).toBe(true);
+    database.close();
+  });
+
+  it('persists the latest playback checkpoint and active track', async () => {
+    const { database, directory } = await createDatabase();
+    const musicPath = path.join(directory, 'track.flac');
+    const track = scannedTrack(directory, musicPath);
+    database.syncRoot(directory, [track], new Set([musicPath]));
+
+    const saved = database.savePlaybackCheckpoint({
+      trackId: track.id,
+      positionMs: 42_250,
+      durationMs: 123_400,
+      completed: false,
+      reason: 'pause',
+    });
+
+    expect(saved).toMatchObject({ positionMs: 42_250, durationMs: 123_400 });
+    expect(database.getPlaybackState()).toMatchObject({
+      lastTrackId: track.id,
+      progress: [expect.objectContaining({
+        trackId: track.id,
+        positionMs: 42_250,
+        completed: false,
+        reason: 'pause',
+      })],
+    });
+    database.close();
+  });
+
+  it('resets completed playback and retains progress when a library record is removed', async () => {
+    const { database, directory } = await createDatabase();
+    const musicPath = path.join(directory, 'track.flac');
+    const track = scannedTrack(directory, musicPath);
+    database.syncRoot(directory, [track], new Set([musicPath]));
+    database.savePlaybackCheckpoint({
+      trackId: track.id,
+      positionMs: 123_400,
+      durationMs: 123_400,
+      completed: true,
+      reason: 'ended',
+    });
+
+    database.removeTrack(track.id);
+
+    expect(database.getPlaybackState().progress).toEqual([
+      expect.objectContaining({
+        trackId: track.id,
+        positionMs: 0,
+        completed: true,
+      }),
+    ]);
     database.close();
   });
 

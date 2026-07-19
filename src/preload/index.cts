@@ -1,9 +1,11 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type {
+  BilingualLyricsTask,
   LibrarySnapshot,
   LocalLyricsProofreadProgress,
   LocalLyricsTask,
   LyralumeApi,
+  PlaybackStateSnapshot,
   ScanProgress,
 } from '../shared/contracts.js';
 
@@ -18,6 +20,10 @@ const IPC_CHANNELS = {
   libraryRescan: 'library:rescan',
   libraryChanged: 'library:changed',
   libraryScanProgress: 'library:scan-progress',
+  playbackState: 'playback:state',
+  playbackCheckpoint: 'playback:checkpoint',
+  playbackFlushRequested: 'playback:flush-requested',
+  playbackFlushComplete: 'playback:flush-complete',
   lyricsLoad: 'lyrics:load',
   lyricsWriteAdjustedTiming: 'lyrics:write-adjusted-timing',
   lyricsOnlineTask: 'lyrics:online-task',
@@ -36,6 +42,11 @@ const IPC_CHANNELS = {
   lyricsLocalWriteTag: 'lyrics:local-write-tag',
   lyricsLocalChanged: 'lyrics:local-changed',
   lyricsLocalProofreadProgress: 'lyrics:local-proofread-progress',
+  lyricsBilingualTask: 'lyrics:bilingual-task',
+  lyricsBilingualStart: 'lyrics:bilingual-start',
+  lyricsBilingualCancel: 'lyrics:bilingual-cancel',
+  lyricsBilingualWriteTag: 'lyrics:bilingual-write-tag',
+  lyricsBilingualChanged: 'lyrics:bilingual-changed',
   appVersion: 'app:version',
 } as const;
 
@@ -68,6 +79,13 @@ const api: LyralumeApi = {
       ipcRenderer.on(IPC_CHANNELS.libraryScanProgress, listener);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.libraryScanProgress, listener);
     },
+  },
+  playback: {
+    getState: () => ipcRenderer.invoke(IPC_CHANNELS.playbackState) as Promise<PlaybackStateSnapshot>,
+    saveCheckpoint: (checkpoint) => ipcRenderer.invoke(
+      IPC_CHANNELS.playbackCheckpoint,
+      checkpoint,
+    ),
   },
   lyrics: {
     load: (trackId) => ipcRenderer.invoke(IPC_CHANNELS.lyricsLoad, trackId),
@@ -138,9 +156,43 @@ const api: LyralumeApi = {
       ipcRenderer.on(IPC_CHANNELS.lyricsLocalProofreadProgress, listener);
       return () => ipcRenderer.removeListener(IPC_CHANNELS.lyricsLocalProofreadProgress, listener);
     },
+    getBilingualTask: (trackId) => ipcRenderer.invoke(
+      IPC_CHANNELS.lyricsBilingualTask,
+      trackId,
+    ),
+    startBilingual: (trackId, options) => ipcRenderer.invoke(
+      IPC_CHANNELS.lyricsBilingualStart,
+      trackId,
+      options,
+    ),
+    cancelBilingual: (trackId) => ipcRenderer.invoke(
+      IPC_CHANNELS.lyricsBilingualCancel,
+      trackId,
+    ),
+    writeBilingualTag: (trackId) => ipcRenderer.invoke(
+      IPC_CHANNELS.lyricsBilingualWriteTag,
+      trackId,
+    ),
+    onBilingualTaskChanged: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, task: BilingualLyricsTask): void => {
+        callback(task);
+      };
+      ipcRenderer.on(IPC_CHANNELS.lyricsBilingualChanged, listener);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.lyricsBilingualChanged, listener);
+    },
   },
   app: {
     getVersion: () => ipcRenderer.invoke(IPC_CHANNELS.appVersion),
+    onPlaybackFlushRequested: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, requestId: string): void => {
+        callback(requestId);
+      };
+      ipcRenderer.on(IPC_CHANNELS.playbackFlushRequested, listener);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.playbackFlushRequested, listener);
+    },
+    completePlaybackFlush: (requestId) => {
+      ipcRenderer.send(IPC_CHANNELS.playbackFlushComplete, requestId);
+    },
   },
 };
 

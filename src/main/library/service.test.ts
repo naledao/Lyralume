@@ -22,6 +22,7 @@ function scannedTrack(rootPath: string, filePath: string): ScannedTrack {
     title: 'Track',
     artist: 'Artist',
     album: 'Album',
+    language: null,
     duration: 123.4,
     fileSize: 2048,
     modifiedAt: 42,
@@ -124,6 +125,42 @@ describe('LibraryService', () => {
       artist: 'Only Artist',
       album: 'Album',
     });
+  });
+
+  it('writes an MP3 language tag before updating the library', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'lyralume-service-test-'));
+    temporaryDirectories.push(directory);
+    const database = new LibraryDatabase(path.join(directory, 'library.db'));
+    databases.push(database);
+    const audioPath = path.join(directory, 'track.mp3');
+    const track = scannedTrack(directory, audioPath);
+    database.syncRoot(directory, [track], new Set([audioPath]));
+    const writer: TrackMetadataWriter = {
+      writeMetadataAndVerify: vi.fn(async () => undefined),
+    };
+    const service = new LibraryService(database, writer);
+    services.push(service);
+
+    const snapshot = await service.updateTrackMetadata(track.id, { language: 'zho' });
+
+    expect(writer.writeMetadataAndVerify).toHaveBeenCalledWith(audioPath, { language: 'zho' });
+    expect(snapshot.tracks[0].language).toBe('zho');
+  });
+
+  it('stores a non-MP3 language locally without writing the source file', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'lyralume-service-test-'));
+    temporaryDirectories.push(directory);
+    const database = new LibraryDatabase(path.join(directory, 'library.db'));
+    databases.push(database);
+    const audioPath = path.join(directory, 'track.flac');
+    const track = { ...scannedTrack(directory, audioPath), fileName: 'track.flac' };
+    database.syncRoot(directory, [track], new Set([audioPath]));
+    const service = new LibraryService(database);
+    services.push(service);
+
+    const snapshot = await service.updateTrackMetadata(track.id, { language: 'zxx' });
+
+    expect(snapshot.tracks[0].language).toBe('zxx');
   });
 
   it('deletes empty metadata fields and exposes their display fallbacks', async () => {

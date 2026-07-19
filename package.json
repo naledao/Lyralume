@@ -1,6 +1,6 @@
 {
   "name": "lyralume",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "private": true,
   "description": "Win11 local music player with synchronized lyrics and audio-reactive visuals",
   "type": "module",
@@ -25,6 +25,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@openai/codex-sdk": "0.144.5",
     "better-sqlite3": "12.11.1",
     "chokidar": "5.0.0",
     "electron-log": "5.4.4",
@@ -57,6 +58,7 @@
   "build": {
     "appId": "com.lyralume.player",
     "productName": "Lyralume",
+    "electronDist": "node_modules/electron/dist",
     "asar": true,
     "npmRebuild": false,
     "directories": {
@@ -79,7 +81,8 @@
       }
     ],
     "asarUnpack": [
-      "node_modules/better-sqlite3/**/*"
+      "node_modules/better-sqlite3/**/*",
+      "node_modules/@openai/codex*/**/*"
     ],
     "win": {
       "target": [

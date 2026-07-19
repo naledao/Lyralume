@@ -2,8 +2,16 @@ type AudioEventMap = {
   time: { currentTime: number; duration: number };
   duration: number;
   ended: undefined;
+  seeked: undefined;
   error: string;
 };
+
+export interface AudioPlaybackSnapshot {
+  currentTime: number;
+  duration: number;
+  paused: boolean;
+  hasSource: boolean;
+}
 
 type Listener<K extends keyof AudioEventMap> = (value: AudioEventMap[K]) => void;
 
@@ -28,6 +36,7 @@ class AudioEngine {
       this.emit('duration', Number.isFinite(this.audio.duration) ? this.audio.duration : 0);
     });
     this.audio.addEventListener('ended', () => this.emit('ended', undefined));
+    this.audio.addEventListener('seeked', () => this.emit('seeked', undefined));
     this.audio.addEventListener('error', () => {
       const code = this.audio.error?.code;
       const detail = code ? `（媒体错误 ${code}）` : '';
@@ -46,13 +55,18 @@ class AudioEngine {
     for (const listener of this.listeners.get(event) ?? []) listener(value as never);
   }
 
-  async load(sourceUrl: string, autoplay: boolean): Promise<void> {
+  async load(sourceUrl: string, autoplay: boolean, startTime = 0): Promise<void> {
     const generation = ++this.loadGeneration;
     this.audio.pause();
     this.audio.removeAttribute('src');
     this.audio.load();
     this.audio.src = sourceUrl;
     this.audio.load();
+    if (startTime > 0) {
+      await this.waitForMetadata();
+      if (generation !== this.loadGeneration) return;
+      this.seek(startTime);
+    }
     if (autoplay) await this.play(generation);
   }
 
@@ -85,21 +99,18 @@ class AudioEngine {
     this.audio.load();
     this.audio.src = sourceUrl;
     this.audio.load();
-    if (this.audio.readyState < HTMLMediaElement.HAVE_METADATA) {
-      await new Promise<void>((resolve) => {
-        const finish = (): void => {
-          clearTimeout(timeout);
-          this.audio.removeEventListener('loadedmetadata', finish);
-          this.audio.removeEventListener('error', finish);
-          resolve();
-        };
-        const timeout = window.setTimeout(finish, 8_000);
-        this.audio.addEventListener('loadedmetadata', finish, { once: true });
-        this.audio.addEventListener('error', finish, { once: true });
-      });
-    }
+    await this.waitForMetadata();
     if (generation !== this.loadGeneration) return;
     this.seek(time);
+  }
+
+  getPlaybackSnapshot(): AudioPlaybackSnapshot {
+    return {
+      currentTime: Number.isFinite(this.audio.currentTime) ? this.audio.currentTime : 0,
+      duration: Number.isFinite(this.audio.duration) ? this.audio.duration : 0,
+      paused: this.audio.paused,
+      hasSource: Boolean(this.audio.getAttribute('src')),
+    };
   }
 
   seek(time: number): void {
@@ -130,6 +141,21 @@ class AudioEngine {
       this.analyser.connect(this.context.destination);
     }
     if (this.context.state === 'suspended') await this.context.resume();
+  }
+
+  private async waitForMetadata(): Promise<void> {
+    if (this.audio.readyState >= HTMLMediaElement.HAVE_METADATA) return;
+    await new Promise<void>((resolve) => {
+      const finish = (): void => {
+        clearTimeout(timeout);
+        this.audio.removeEventListener('loadedmetadata', finish);
+        this.audio.removeEventListener('error', finish);
+        resolve();
+      };
+      const timeout = window.setTimeout(finish, 8_000);
+      this.audio.addEventListener('loadedmetadata', finish, { once: true });
+      this.audio.addEventListener('error', finish, { once: true });
+    });
   }
 
   async dispose(): Promise<void> {

@@ -1,17 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  BilingualLyricsStartOptions,
   LocalLyricsProofreadProgress,
   LocalLyricsTask,
   OnlineLyricsCandidate,
   OnlineLyricsTask,
   Track,
 } from '../../shared/contracts';
-import { findActiveLyricIndex } from '../../shared/lrc';
+import { findActiveLyricIndex, groupLyricLines } from '../../shared/lrc';
 import { audioEngine } from '../audio/AudioEngine';
+import {
+  checkpointFromSnapshot,
+  persistPlaybackCheckpoint,
+} from '../audio/playbackCheckpoints';
 import { withReleasedTrackSource } from '../audio/withReleasedTrackSource';
 import { formatTime } from '../lib/format';
 import { currentTrackFromState, useAppStore } from '../store/useAppStore';
 import { Icon } from './Icon';
+import { BilingualLyricsView } from './BilingualLyricsView';
 import { LocalLyricsEditor } from './LocalLyricsEditor';
 
 const EMPTY_LOCAL_LYRICS_PROOFREAD_PROGRESS: LocalLyricsProofreadProgress[] = [];
@@ -20,6 +26,7 @@ export function LyricsPanel() {
   const containerRef = useRef<HTMLDivElement>(null);
   const [onlineMode, setOnlineMode] = useState(false);
   const [localMode, setLocalMode] = useState(false);
+  const [bilingualMode, setBilingualMode] = useState(false);
   const track = useAppStore(currentTrackFromState);
   const currentTrackId = useAppStore((state) => state.currentTrackId);
   const status = useAppStore((state) => state.lyricsStatus);
@@ -47,6 +54,8 @@ export function LyricsPanel() {
   const localModelSettings = useAppStore((state) => state.localLyricsModelSettings);
   const localModelSettingsBusy = useAppStore((state) => state.localLyricsModelSettingsBusy);
   const localModelSettingsError = useAppStore((state) => state.localLyricsModelSettingsError);
+  const bilingualTask = useAppStore((state) => state.bilingualLyricsTask);
+  const bilingualBusy = useAppStore((state) => state.bilingualLyricsBusy);
   const adjustOffset = useAppStore((state) => state.adjustLyricOffset);
   const resetOffset = useAppStore((state) => state.resetLyricOffset);
   const searchOnline = useAppStore((state) => state.searchOnlineLyrics);
@@ -61,6 +70,9 @@ export function LyricsPanel() {
   const saveLocalDraft = useAppStore((state) => state.saveLocalLyricsDraft);
   const confirmLocalLrc = useAppStore((state) => state.confirmLocalLyricsLrc);
   const writeLocalTag = useAppStore((state) => state.writeLocalLyricsTag);
+  const startBilingual = useAppStore((state) => state.startBilingualLyrics);
+  const cancelBilingual = useAppStore((state) => state.cancelBilingualLyrics);
+  const writeBilingualTag = useAppStore((state) => state.writeBilingualLyricsTag);
   const writeAdjustedTiming = useAppStore((state) => state.writeAdjustedLyricTiming);
   const selectTrack = useAppStore((state) => state.selectTrack);
   const rememberedTask = useMemo(() => (
@@ -75,37 +87,70 @@ export function LyricsPanel() {
   const rememberedTrack = useAppStore((state) => (
     rememberedTask ? state.tracks.find((item) => item.id === rememberedTask.trackId) ?? null : null
   ));
+  const cues = useMemo(() => groupLyricLines(lines), [lines]);
   const activeIndex = useMemo(
-    () => findActiveLyricIndex(lines, currentTime, offsetMs),
-    [lines, currentTime, offsetMs],
+    () => findActiveLyricIndex(cues, currentTime, offsetMs),
+    [cues, currentTime, offsetMs],
   );
 
   useEffect(() => {
     setOnlineMode(false);
+    setBilingualMode(false);
   }, [currentTrackId]);
 
   useEffect(() => {
-    if (onlineMode || localMode) return;
+    if (onlineMode || localMode || bilingualMode) return;
     const active = containerRef.current?.querySelector<HTMLElement>('[data-active="true"]');
     active?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }, [activeIndex, localMode, onlineMode]);
+  }, [activeIndex, bilingualMode, localMode, onlineMode]);
 
   const startOnlineSearch = (): void => {
     setLocalMode(false);
+    setBilingualMode(false);
     setOnlineMode(true);
     void searchOnline();
   };
 
   const showLocalDraft = (): void => {
     setOnlineMode(false);
+    setBilingualMode(false);
     setLocalMode(true);
     void loadLocalModelSettings();
+  };
+
+  const showBilingualDraft = (): void => {
+    setOnlineMode(false);
+    setLocalMode(false);
+    setBilingualMode(true);
+  };
+
+  const handleStartBilingual = (options: BilingualLyricsStartOptions): void => {
+    showBilingualDraft();
+    void startBilingual(options);
+  };
+
+  const handleStartLocal = async (
+    options: Parameters<typeof startLocal>[0],
+  ): Promise<void> => {
+    if (!track) return;
+    try {
+      await persistPlaybackCheckpoint(checkpointFromSnapshot(
+        track.id,
+        audioEngine.getPlaybackSnapshot(),
+        'file-operation',
+        { fallbackDuration: track.duration },
+      ));
+    } catch (checkpointError) {
+      console.warn('Playback progress could not be saved before the local lyrics task', checkpointError);
+    }
+    await startLocal(options);
   };
 
   const returnToRememberedTask = (): void => {
     if (!rememberedTask) return;
     setOnlineMode(false);
     setLocalMode(true);
+    setBilingualMode(false);
     void loadLocalModelSettings();
     selectTrack(rememberedTask.trackId, false);
   };
@@ -146,6 +191,11 @@ export function LyricsPanel() {
     return withReleasedTrackSource(track, () => writeLocalTag(update));
   };
 
+  const handleWriteBilingualTag = async (): ReturnType<typeof writeBilingualTag> => {
+    if (!track) return null;
+    return withReleasedTrackSource(track, writeBilingualTag);
+  };
+
   const handleWriteAdjustedTiming = async (): Promise<void> => {
     if (!track) return;
     await withReleasedTrackSource(track, writeAdjustedTiming);
@@ -160,7 +210,7 @@ export function LyricsPanel() {
   return (
     <aside className="lyrics-panel">
       <div className="panel-heading">
-        <div><Icon name="lyrics" /><span>{localMode ? '本地歌词草稿' : onlineMode ? '在线歌词' : '同步歌词'}</span></div>
+        <div><Icon name="lyrics" /><span>{bilingualMode ? '中文双语草稿' : localMode ? '本地歌词草稿' : onlineMode ? '在线歌词' : '同步歌词'}</span></div>
         <div className="panel-heading__actions">
           {rememberedTask && rememberedTrack && (
             <button
@@ -172,25 +222,41 @@ export function LyricsPanel() {
               《{rememberedTrack.title}》· {localTaskStatusLabel(rememberedTask)}
             </button>
           )}
-          {!onlineMode && !localMode && currentTrackId && (
+          {!onlineMode && !localMode && !bilingualMode && currentTrackId && (
             <button type="button" onClick={startOnlineSearch}>在线匹配</button>
           )}
-          {!onlineMode && !localMode && currentTrackId && (
+          {!onlineMode && !localMode && !bilingualMode && currentTrackId && (
             <button type="button" onClick={showLocalDraft}>
               {localTask && localTask.status !== 'idle' ? '查看本曲任务' : '本地生成'}
             </button>
           )}
+          {!onlineMode && !localMode && !bilingualMode && status === 'loaded' && (
+            <button type="button" onClick={showBilingualDraft}>中文译配</button>
+          )}
           {onlineMode && <span className="status-pill"><i />LRCLIB</span>}
           {localMode && <span className="status-pill"><i />LOCAL AI</span>}
-          {!onlineMode && !localMode && status === 'loaded' && <span className="status-pill"><i />LRC</span>}
+          {bilingualMode && <span className="status-pill"><i />CODEX</span>}
+          {!onlineMode && !localMode && !bilingualMode && status === 'loaded' && <span className="status-pill"><i />LRC</span>}
         </div>
       </div>
 
       <div
-        className={(onlineMode || localMode) ? 'lyrics-panel__body lyrics-panel__body--online' : 'lyrics-panel__body'}
+        className={(onlineMode || localMode || bilingualMode) ? 'lyrics-panel__body lyrics-panel__body--online' : 'lyrics-panel__body'}
         ref={containerRef}
       >
-        {localMode && track ? (
+        {bilingualMode && track ? (
+          <BilingualLyricsView
+            track={track}
+            task={bilingualTask}
+            busy={bilingualBusy}
+            currentTime={currentTime}
+            offsetMs={offsetMs}
+            onStart={handleStartBilingual}
+            onCancel={() => void cancelBilingual()}
+            onWriteTag={handleWriteBilingualTag}
+            onSeek={(time) => audioEngine.seek(time)}
+          />
+        ) : localMode && track ? (
           <LocalLyricsEditor
             track={track}
             task={localTask}
@@ -203,7 +269,7 @@ export function LyricsPanel() {
             modelSettingsError={localModelSettingsError}
             onChooseUvrModel={() => void chooseLocalUvrModel()}
             onResetUvrModel={() => void resetLocalUvrModel()}
-            onStart={(options) => void startLocal(options)}
+            onStart={(options) => void handleStartLocal(options)}
             onCancel={() => void cancelLocal()}
             onProofread={proofreadLocal}
             onSaveDraft={saveLocalDraft}
@@ -243,15 +309,23 @@ export function LyricsPanel() {
             {status === 'loaded' && (
               <div className="lyric-lines">
                 <div className="lyric-lines__spacer" />
-                {lines.map((line, index) => (
+                {cues.map((cue, index) => (
                   <button
                     type="button"
                     className="lyric-line"
                     data-active={index === activeIndex}
-                    key={line.id}
-                    onClick={() => audioEngine.seek(line.time + offsetMs / 1000)}
+                    key={cue.id}
+                    onClick={() => audioEngine.seek(cue.time + offsetMs / 1000)}
                   >
-                    {line.text || '· · ·'}
+                    {cue.lines.map((line) => (
+                      <span
+                        className={`lyric-line__text lyric-line__text--${line.role}`}
+                        key={line.id}
+                        lang={line.role === 'translation' ? 'zh-CN' : 'und'}
+                      >
+                        {line.text || '· · ·'}
+                      </span>
+                    ))}
                   </button>
                 ))}
                 <div className="lyric-lines__spacer" />
@@ -261,7 +335,16 @@ export function LyricsPanel() {
         )}
       </div>
 
-      {localMode ? (
+      {bilingualMode ? (
+        <div className="online-lyrics__footer">
+          <span>
+            {bilingualTask?.tagWriteStatus === 'verified'
+              ? '双语同步歌词已写入 MP3，并通过回读验证'
+              : '草稿需人工审阅；确认写入后只修改 MP3 歌词标签'}
+          </span>
+          <button type="button" onClick={() => setBilingualMode(false)}>返回同步歌词</button>
+        </div>
+      ) : localMode ? (
         <div className="online-lyrics__footer">
           <span>AI 结果始终作为草稿，确认前不会写入歌曲</span>
           <button type="button" onClick={() => setLocalMode(false)}>返回同步歌词</button>

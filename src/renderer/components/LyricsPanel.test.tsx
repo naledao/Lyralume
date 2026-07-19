@@ -15,6 +15,7 @@ const track: Track = {
   title: '水星记（待补全）',
   artist: '未知艺术家',
   album: '未知专辑',
+  language: null,
   fileName: '水星记.mp3',
   duration: 325,
   fileSize: 100,
@@ -104,5 +105,33 @@ describe('LyricsPanel Codex progress', () => {
     expect(screen.getByRole('button', { name: '应用并写入音频' })).toBeEnabled();
     expect(screen.getByText('-2.0s')).toBeVisible();
     expect(screen.getByText('调整后写入同步歌词标签')).toBeVisible();
+  });
+
+  it('renders same-timestamp bilingual rows as one active cue', () => {
+    useAppStore.setState({
+      tracks: [{ ...track, hasLyrics: true }],
+      currentTrackId: track.id,
+      currentTime: 2,
+      lyricsStatus: 'loaded',
+      lyricLines: [
+        { id: 'zh', time: 2, text: '住在城东，每一天都忙着工作' },
+        { id: 'en', time: 2, text: 'On the East-side of the city, she was working every day' },
+      ],
+      lyricOffsetMs: 0,
+      lyricsSource: 'embedded',
+      lyricsRevision: 'e'.repeat(64),
+      localLyricsProofreadProgress: {},
+    });
+
+    render(<LyricsPanel />);
+
+    const activeCue = screen.getByRole('button', {
+      name: /On the East-side of the city, she was working every day.*住在城东，每一天都忙着工作/,
+    });
+    expect(activeCue).toHaveAttribute('data-active', 'true');
+    expect(activeCue.querySelectorAll('.lyric-line__text')).toHaveLength(2);
+    expect(activeCue.querySelector('.lyric-line__text--translation')).toHaveTextContent(
+      '住在城东，每一天都忙着工作',
+    );
   });
 });

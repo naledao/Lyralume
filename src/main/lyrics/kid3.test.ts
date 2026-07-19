@@ -124,6 +124,26 @@ describe('Kid3Adapter', () => {
     ]);
   });
 
+  it('writes the standard language field and verifies its readback', async () => {
+    const { directory, audioPath } = await fixture();
+    const runner = successfulRunner();
+    const metadataReader: TrackMetadataReader = vi.fn(async () => ({ language: 'jpn' }));
+    const adapter = new Kid3Adapter(
+      path.join(directory, 'cache'),
+      runner,
+      syncedLyrics(),
+      'kid3-cli',
+      metadataReader,
+    );
+
+    await adapter.writeMetadataAndVerify(audioPath, { language: 'jpn' });
+
+    expect(runner).toHaveBeenCalledWith('kid3-cli', [
+      '-c', "set Language 'jpn' 2",
+      audioPath,
+    ]);
+  });
+
   it('deletes an individual metadata frame when its value is empty', async () => {
     const { directory, audioPath } = await fixture();
     const runner = successfulRunner();

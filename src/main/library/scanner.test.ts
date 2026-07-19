@@ -53,6 +53,7 @@ describe('scanRoot', () => {
       fileName: 'fixture.wav',
       title: 'fixture',
       artist: '未知艺术家',
+      language: null,
       lrcPath: lyricsPath,
     });
     expect(result.tracks[0].duration).toBeCloseTo(0.1, 2);

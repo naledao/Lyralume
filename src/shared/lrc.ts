@@ -4,6 +4,18 @@ export interface LyricLine {
   text: string;
 }
 
+export type LyricCueLineRole = 'original' | 'translation' | 'additional';
+
+export interface LyricCueLine extends LyricLine {
+  role: LyricCueLineRole;
+}
+
+export interface LyricCue {
+  id: string;
+  time: number;
+  lines: LyricCueLine[];
+}
+
 export interface ParsedLyrics {
   lines: LyricLine[];
   metadata: Record<string, string>;
@@ -59,8 +71,56 @@ export function parseLrc(raw: string): ParsedLyrics {
   };
 }
 
+const HAN_SCRIPT = /\p{Script=Han}/u;
+const JAPANESE_KANA = /[\p{Script=Hiragana}\p{Script=Katakana}]/u;
+const KOREAN_HANGUL = /\p{Script=Hangul}/u;
+
+function isLikelyChineseTranslation(text: string): boolean {
+  return HAN_SCRIPT.test(text)
+    && !JAPANESE_KANA.test(text)
+    && !KOREAN_HANGUL.test(text);
+}
+
+function orderCueLines(lines: LyricLine[]): LyricCueLine[] {
+  if (lines.length === 1) return [{ ...lines[0], role: 'original' }];
+
+  const chineseLines = lines.filter((line) => isLikelyChineseTranslation(line.text));
+  const otherLines = lines.filter((line) => !isLikelyChineseTranslation(line.text));
+  const canIdentifyTranslation = chineseLines.length === 1 && otherLines.length > 0;
+  const ordered = canIdentifyTranslation
+    ? [otherLines[0], chineseLines[0], ...otherLines.slice(1)]
+    : lines;
+
+  return ordered.map((line, index) => ({
+    ...line,
+    role: index === 0 ? 'original' : index === 1 ? 'translation' : 'additional',
+  }));
+}
+
+/**
+ * Turns flat LRC rows into playback cues. Rows that share an exact millisecond
+ * timestamp are one cue, so bilingual rows receive one active state.
+ */
+export function groupLyricLines(lines: LyricLine[]): LyricCue[] {
+  const groups = new Map<number, LyricLine[]>();
+  for (const line of lines) {
+    const timestampMs = Math.round(line.time * 1_000);
+    const group = groups.get(timestampMs);
+    if (group) group.push(line);
+    else groups.set(timestampMs, [line]);
+  }
+
+  return [...groups.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([timestampMs, groupedLines]) => ({
+      id: `cue-${timestampMs}-${groupedLines.map((line) => line.id).join('-')}`,
+      time: timestampMs / 1_000,
+      lines: orderCueLines(groupedLines),
+    }));
+}
+
 export function findActiveLyricIndex(
-  lines: LyricLine[],
+  lines: ReadonlyArray<{ time: number }>,
   currentTime: number,
   offsetMs = 0,
 ): number {

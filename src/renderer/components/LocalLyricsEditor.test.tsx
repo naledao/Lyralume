@@ -8,6 +8,7 @@ const track: Track = {
   title: 'Local Song',
   artist: 'Artist',
   album: 'Album',
+  language: null,
   fileName: 'Local Song.flac',
   duration: 60,
   fileSize: 100,

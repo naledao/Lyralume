@@ -28,6 +28,8 @@ pnpm package:win  # 生成 Win11 x64 NSIS 安装包
 
 在线歌词查询通过 LRCLIB，不需要 API Key；没有匹配结果时可改用本地生成。若要使用“写入音频标签”，需单独安装 Kid3，并确保 `kid3-cli` 可以从 `PATH` 启动；Lyralume 当前不会把 Kid3 二进制打进安装包。未安装 Kid3 时，已经保存的同名 LRC 不会丢失。
 
+“中文译配”生成的双语草稿经人工审阅后，可以把同一时间戳下的原文与中文行直接写入原音频的 ID3 SYLT 标签。写入过程使用歌曲级文件锁，播放器会先释放文件句柄；成功后回读逐行验证并优先显示内嵌歌词，外置 LRC 不会被覆盖。
+
 ## 本地歌词草稿环境
 
 UVR 与 WhisperX 使用两个隔离的 Python 3.11 环境，不能安装到 Electron 渲染进程或共用同一个虚拟环境。Worker 脚本、固定的顶层依赖版本和 Windows 安装示例位于 [`workers/README.md`](workers/README.md)。默认环境位置为：
@@ -39,7 +41,7 @@ UVR 与 WhisperX 使用两个隔离的 Python 3.11 环境，不能安装到 Elec
 
 也可用 `LYRALUME_UVR_PYTHON` 和 `LYRALUME_WHISPERX_PYTHON` 指向其他解释器；`LYRALUME_AI_DEVICE=cpu` 可把默认设备切换为 CPU。NVIDIA CUDA 是正式加速路径，CPU 是兼容回退。模型由 [Audio Separator](https://github.com/nomadkaraoke/python-audio-separator) 与 [WhisperX](https://github.com/m-bain/whisperX) 下载到应用用户数据目录，模型管理和缓存清理留在第四阶段。
 
-校对页可选调用本机已经安装并登录的 Codex CLI。Codex 会启用 live web search，按歌曲名、艺术家、专辑和草稿片段查询公开资料辅助校对，并把实际使用的 HTTPS 来源返回到界面；界面通过 `codex exec --json` 的 JSONL 事件实时显示 CLI 启动、联网检索、分析、结构校验、完成或失败流程，只展示操作摘要，不展示模型隐藏推理。Codex 可以修改歌词文字、每行开始/结束时间、整体偏移、行数、行 ID 和顺序，也可以跨行移动文字、拆行或合行。现有行保留原置信度和标记，Codex 新增的行会标记为低置信度；结果不会自动保存，并可在界面中完整撤销。Lyralume 不打包 Codex SDK 或 CLI；Windows 默认从 `PATH` 查找 npm 安装的 `codex.cmd`，再直接通过同目录的 `node.exe` 启动 `@openai/codex/bin/codex.js`，以避开 WindowsApps 执行权限问题。也可用 `LYRALUME_CODEX_PATH` 指向 Codex CLI 的 `.cmd` 或原生可执行文件。该能力与 LRCLIB 在线歌词查询相互独立。
+校对页可选调用本机已经安装并登录的 Codex CLI。Codex 会启用 live web search，按歌曲名、艺术家、专辑和草稿片段查询公开资料辅助校对，并把实际使用的 HTTPS 来源返回到界面；界面通过 `codex exec --json` 的 JSONL 事件实时显示 CLI 启动、联网检索、分析、结构校验、完成或失败流程，只展示操作摘要，不展示模型隐藏推理。Codex 可以修改歌词文字、每行开始/结束时间、整体偏移、行数、行 ID 和顺序，也可以跨行移动文字、拆行或合行。现有行保留原置信度和标记，Codex 新增的行会标记为低置信度；结果不会自动保存，并可在界面中完整撤销。本地草稿校对在 Windows 默认从 `PATH` 查找 npm 安装的 `codex.cmd`，也可用 `LYRALUME_CODEX_PATH` 指定 CLI；中文双语译配通过 `@openai/codex-sdk` 调用安装包内的 Windows Codex CLI，并复用当前用户 `CODEX_HOME`（默认 `~/.codex`）中的登录状态。安装版从 `app.asar.unpacked` 的物理路径启动该 CLI，避免 Windows 无法执行 ASAR 虚拟路径。该能力与 LRCLIB 在线歌词查询相互独立。
 
 ## 安全边界
 

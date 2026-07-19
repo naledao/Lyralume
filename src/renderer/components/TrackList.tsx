@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  TRACK_LANGUAGE_OPTIONS,
   UNKNOWN_ALBUM,
   UNKNOWN_ARTIST,
   type Track,
+  type TrackLanguage,
   type TrackMetadataUpdate,
 } from '../../shared/contracts';
 import { withReleasedTrackSource } from '../audio/withReleasedTrackSource';
@@ -20,6 +22,7 @@ export function TrackList({ tracks }: { tracks: Track[] }) {
   const removeTrack = useAppStore((state) => state.removeTrack);
   const [removingTrackId, setRemovingTrackId] = useState<string | null>(null);
   const [savingTrackId, setSavingTrackId] = useState<string | null>(null);
+  const [savingLanguageTrackIds, setSavingLanguageTrackIds] = useState<Set<string>>(new Set());
   const [metadataDraft, setMetadataDraft] = useState<{
     trackId: string;
     title: string;
@@ -99,9 +102,31 @@ export function TrackList({ tracks }: { tracks: Track[] }) {
     if (!confirmed) return;
     setRemovingTrackId(track.id);
     try {
-      await removeTrack(track.id);
+      await withReleasedTrackSource(track, () => removeTrack(track.id));
     } finally {
       setRemovingTrackId(null);
+    }
+  };
+
+  const saveLanguage = async (
+    track: Track,
+    language: TrackLanguage | '',
+  ): Promise<void> => {
+    if (savingLanguageTrackIds.has(track.id) || (track.language ?? '') === language) return;
+    setSavingLanguageTrackIds((current) => new Set(current).add(track.id));
+    try {
+      const operation = () => updateTrackMetadata(track.id, { language });
+      if (track.fileName.toLocaleLowerCase().endsWith('.mp3')) {
+        await withReleasedTrackSource(track, operation);
+      } else {
+        await operation();
+      }
+    } finally {
+      setSavingLanguageTrackIds((current) => {
+        const next = new Set(current);
+        next.delete(track.id);
+        return next;
+      });
     }
   };
 
@@ -118,13 +143,14 @@ export function TrackList({ tracks }: { tracks: Track[] }) {
   return (
     <div className="track-table" role="table" aria-label="音乐库歌曲">
       <div className="track-table__header" role="row">
-        <span>#</span><span>歌曲</span><span>专辑</span><span>大小</span><span>时长</span><span aria-hidden="true" />
+        <span>#</span><span>歌曲</span><span>专辑</span><span>语种</span><span>大小</span><span>时长</span><span aria-hidden="true" />
       </div>
       <div className="track-table__body">
         {tracks.map((track, index) => {
           const active = currentTrackId === track.id;
           const editing = metadataDraft?.trackId === track.id;
           const saving = savingTrackId === track.id;
+          const savingLanguage = savingLanguageTrackIds.has(track.id);
           const canSave = Boolean(metadataDraft);
           return (
             <div
@@ -196,6 +222,28 @@ export function TrackList({ tracks }: { tracks: Track[] }) {
                   </>
                 )}
               </span>
+              <div
+                className="track-row__language"
+                role="cell"
+                aria-busy={savingLanguage}
+              >
+                <select
+                  className="track-language-select"
+                  data-language={track.language ?? 'unset'}
+                  aria-label={`设置 ${track.title} 的语种`}
+                  title={savingLanguage ? '正在保存语种…' : '语种标签'}
+                  disabled={savingLanguage}
+                  value={track.language ?? ''}
+                  onChange={(event) => {
+                    void saveLanguage(track, event.target.value as TrackLanguage | '');
+                  }}
+                >
+                  <option value="">未设置</option>
+                  {TRACK_LANGUAGE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
               <span className="track-row__size" role="cell">{formatFileSize(track.fileSize)}</span>
               <span role="cell">{formatTime(track.duration)}</span>
               <div className="track-row__actions" onDoubleClick={(event) => event.stopPropagation()}>

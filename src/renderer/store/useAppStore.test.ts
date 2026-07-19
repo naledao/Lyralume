@@ -7,6 +7,7 @@ const track = (id: string, title: string): Track => ({
   title,
   artist: 'Artist',
   album: 'Album',
+  language: null,
   fileName: `${title}.flac`,
   duration: 60,
   fileSize: 100,
@@ -27,6 +28,10 @@ const api = {
     onChanged: vi.fn(() => () => undefined),
     onScanProgress: vi.fn(() => () => undefined),
   },
+  playback: {
+    getState: vi.fn(),
+    saveCheckpoint: vi.fn(),
+  },
   lyrics: {
     load: vi.fn(),
     writeAdjustedTiming: vi.fn(),
@@ -46,21 +51,38 @@ const api = {
     writeLocalTag: vi.fn(),
     onLocalTaskChanged: vi.fn(() => () => undefined),
     onLocalProofreadProgress: vi.fn(() => () => undefined),
+    getBilingualTask: vi.fn(),
+    startBilingual: vi.fn(),
+    cancelBilingual: vi.fn(),
+    writeBilingualTag: vi.fn(),
+    onBilingualTaskChanged: vi.fn(() => () => undefined),
   },
-  app: { getVersion: vi.fn() },
+  app: {
+    getVersion: vi.fn(),
+    onPlaybackFlushRequested: vi.fn(() => () => undefined),
+    completePlaybackFlush: vi.fn(),
+  },
 } satisfies LyralumeApi;
 
 beforeEach(() => {
   vi.clearAllMocks();
   window.lyralume = api;
+  api.playback.getState.mockResolvedValue({ lastTrackId: null, progress: [] });
+  api.playback.saveCheckpoint.mockImplementation(async (checkpoint) => ({
+    ...checkpoint,
+    updatedAt: 1,
+  }));
   useAppStore.setState({
     tracks: [],
     roots: [],
     queueIds: [],
+    playbackMode: 'sequence',
+    shuffleQueueIds: [],
     currentTrackId: null,
     isPlaying: false,
     currentTime: 0,
     duration: 0,
+    playbackProgress: {},
     lyricsStatus: 'idle',
     lyricLines: [],
     lyricOffsetMs: 0,
@@ -81,6 +103,9 @@ beforeEach(() => {
     localLyricsModelSettings: null,
     localLyricsModelSettingsBusy: false,
     localLyricsModelSettingsError: null,
+    bilingualLyricsTask: null,
+    bilingualLyricsTasks: {},
+    bilingualLyricsBusy: false,
     scanning: false,
     scanProgress: null,
     libraryMessage: null,
@@ -113,6 +138,51 @@ beforeEach(() => {
 });
 
 describe('player store', () => {
+  it('resumes a selected track from its persisted playback position', () => {
+    const item = track('101111111111111111111111', 'Resume');
+    useAppStore.getState().applySnapshot({ tracks: [item], roots: [] });
+    useAppStore.getState().applyPlaybackState({
+      lastTrackId: item.id,
+      progress: [{
+        trackId: item.id,
+        positionMs: 23_500,
+        durationMs: 60_000,
+        completed: false,
+        reason: 'pause',
+        updatedAt: 1,
+      }],
+    });
+
+    useAppStore.getState().selectTrack(item.id, false);
+
+    expect(useAppStore.getState()).toMatchObject({
+      currentTrackId: item.id,
+      currentTime: 23.5,
+      duration: 60,
+      isPlaying: false,
+    });
+  });
+
+  it('starts completed tracks from the beginning', () => {
+    const item = track('102222222222222222222222', 'Completed');
+    useAppStore.getState().applySnapshot({ tracks: [item], roots: [] });
+    useAppStore.getState().applyPlaybackState({
+      lastTrackId: item.id,
+      progress: [{
+        trackId: item.id,
+        positionMs: 0,
+        durationMs: 60_000,
+        completed: true,
+        reason: 'ended',
+        updatedAt: 1,
+      }],
+    });
+
+    useAppStore.getState().selectTrack(item.id, false);
+
+    expect(useAppStore.getState().currentTime).toBe(0);
+  });
+
   it('keeps a bounded per-track Codex workflow', () => {
     const trackId = '111111111111111111111111';
     useAppStore.getState().applyLocalLyricsProofreadProgress({
@@ -168,6 +238,69 @@ describe('player store', () => {
     useAppStore.getState().nextTrack();
     expect(useAppStore.getState().currentTrackId).toBe(first.id);
     expect(useAppStore.getState().isPlaying).toBe(true);
+  });
+
+  it('cycles through sequence, shuffle and repeat-one modes', () => {
+    expect(useAppStore.getState().playbackMode).toBe('sequence');
+    useAppStore.getState().cyclePlaybackMode();
+    expect(useAppStore.getState().playbackMode).toBe('shuffle');
+    useAppStore.getState().cyclePlaybackMode();
+    expect(useAppStore.getState().playbackMode).toBe('repeat-one');
+    useAppStore.getState().cyclePlaybackMode();
+    expect(useAppStore.getState().playbackMode).toBe('sequence');
+  });
+
+  it('plays every track once before reshuffling the list', () => {
+    const tracks = [
+      track('111111111111111111111111', 'One'),
+      track('222222222222222222222222', 'Two'),
+      track('333333333333333333333333', 'Three'),
+      track('444444444444444444444444', 'Four'),
+    ];
+    api.lyrics.load.mockResolvedValue({ status: 'missing' });
+    useAppStore.getState().applySnapshot({ tracks, roots: [] });
+    useAppStore.getState().selectTrack(tracks[0].id);
+    useAppStore.getState().setPlaybackMode('shuffle');
+
+    const played = [useAppStore.getState().currentTrackId];
+    for (let count = 0; count < tracks.length - 1; count += 1) {
+      useAppStore.getState().nextTrack();
+      played.push(useAppStore.getState().currentTrackId);
+    }
+
+    expect(new Set(played).size).toBe(tracks.length);
+    expect(new Set(played)).toEqual(new Set(tracks.map((item) => item.id)));
+    const previous = useAppStore.getState().currentTrackId;
+    useAppStore.getState().nextTrack();
+    expect(useAppStore.getState().currentTrackId).not.toBe(previous);
+  });
+
+  it('stops at the end in sequence mode and advances in the middle', () => {
+    const first = track('111111111111111111111111', 'One');
+    const second = track('222222222222222222222222', 'Two');
+    api.lyrics.load.mockResolvedValue({ status: 'missing' });
+    useAppStore.getState().applySnapshot({ tracks: [first, second], roots: [] });
+    useAppStore.getState().selectTrack(first.id);
+    useAppStore.getState().handleTrackEnded();
+    expect(useAppStore.getState()).toMatchObject({ currentTrackId: second.id, isPlaying: true });
+
+    useAppStore.getState().handleTrackEnded();
+    expect(useAppStore.getState()).toMatchObject({ currentTrackId: second.id, isPlaying: false });
+  });
+
+  it('keeps the current track active when repeat-one ends', () => {
+    const item = track('111111111111111111111111', 'One');
+    useAppStore.getState().applySnapshot({ tracks: [item], roots: [] });
+    useAppStore.getState().selectTrack(item.id);
+    useAppStore.setState({ playbackMode: 'repeat-one', currentTime: 60 });
+
+    useAppStore.getState().handleTrackEnded();
+
+    expect(useAppStore.getState()).toMatchObject({
+      currentTrackId: item.id,
+      currentTime: 0,
+      isPlaying: true,
+    });
   });
 
   it('loads and parses local lyrics through the preload API', async () => {
@@ -346,6 +479,53 @@ describe('player store', () => {
     expect(useAppStore.getState()).toMatchObject({
       tracks: [updated],
       libraryMessage: '已将《New Title》的歌曲信息写入原文件并验证',
+    });
+  });
+
+  it('writes a reviewed bilingual draft to the embedded lyrics tag and reloads it', async () => {
+    const item = track('888888888888888888888888', 'Bilingual');
+    const task = {
+      id: 'f2f3ff7b-4a75-4dd0-9f07-5c5f61bd05e2',
+      trackId: item.id,
+      status: 'review' as const,
+      progress: 1,
+      message: '双语同步歌词已写入 MP3 并通过回读验证',
+      targetLanguage: 'zh-CN' as const,
+      style: 'lyrical' as const,
+      sourceRevision: 'a'.repeat(64),
+      lines: [{
+        id: '1.000-0',
+        time: 1,
+        originalText: 'First line',
+        translatedText: '第一行',
+      }],
+      sources: [],
+      tagWriteStatus: 'verified' as const,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    useAppStore.setState({
+      tracks: [item],
+      currentTrackId: item.id,
+      bilingualLyricsTask: { ...task, tagWriteStatus: 'not_started' },
+    });
+    api.lyrics.writeBilingualTag.mockResolvedValue(task);
+    api.lyrics.load.mockResolvedValue({
+      status: 'loaded',
+      raw: '[00:01.00]First line\n[00:01.00]第一行\n',
+      source: 'embedded',
+      revision: 'b'.repeat(64),
+    });
+
+    await expect(useAppStore.getState().writeBilingualLyricsTag()).resolves.toEqual(task);
+
+    expect(api.lyrics.writeBilingualTag).toHaveBeenCalledWith(item.id);
+    expect(api.lyrics.load).toHaveBeenCalledWith(item.id);
+    expect(useAppStore.getState()).toMatchObject({
+      bilingualLyricsBusy: false,
+      bilingualLyricsTask: task,
+      lyricsStatus: 'loaded',
+      lyricsSource: 'embedded',
     });
   });
 });

@@ -1,14 +1,22 @@
 import Database from 'better-sqlite3';
 import path from 'node:path';
 import type {
+  BilingualLyricsTask,
   LibraryRoot,
   LibrarySnapshot,
   LocalLyricsTask,
   OnlineLyricsTask,
+  PlaybackCheckpoint,
+  PlaybackProgress,
+  PlaybackStateSnapshot,
   Track,
   TrackMetadataUpdate,
 } from '../../shared/contracts.js';
-import { UNKNOWN_ALBUM, UNKNOWN_ARTIST } from '../../shared/contracts.js';
+import {
+  normalizeTrackLanguage,
+  UNKNOWN_ALBUM,
+  UNKNOWN_ARTIST,
+} from '../../shared/contracts.js';
 import type { ScannedTrack, StoredArtwork, StoredTrackLocation } from './types.js';
 
 interface TrackRow {
@@ -17,6 +25,7 @@ interface TrackRow {
   title: string;
   artist: string;
   album: string;
+  language: string | null;
   duration: number;
   file_size: number;
   modified_at: number;
@@ -28,6 +37,15 @@ interface TrackRow {
 interface RootRow {
   path: string;
   added_at: number;
+}
+
+interface PlaybackProgressRow {
+  track_id: string;
+  position_ms: number;
+  duration_ms: number;
+  completed: number;
+  reason: PlaybackCheckpoint['reason'];
+  updated_at: number;
 }
 
 export interface RemovedLibraryTrack {
@@ -65,6 +83,8 @@ export class LibraryDatabase {
         album TEXT NOT NULL,
         artist_override TEXT,
         album_override TEXT,
+        language TEXT,
+        language_override TEXT,
         duration REAL NOT NULL DEFAULT 0,
         file_size INTEGER NOT NULL,
         modified_at INTEGER NOT NULL,
@@ -107,6 +127,30 @@ export class LibraryDatabase {
         updated_at INTEGER NOT NULL,
         FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
       );
+
+      CREATE TABLE IF NOT EXISTS bilingual_lyrics_tasks (
+        track_id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS playback_progress (
+        track_id TEXT PRIMARY KEY,
+        position_ms INTEGER NOT NULL,
+        duration_ms INTEGER NOT NULL,
+        completed INTEGER NOT NULL DEFAULT 0,
+        reason TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS playback_session (
+        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+        current_track_id TEXT,
+        updated_at INTEGER NOT NULL
+      );
     `);
 
     const trackColumns = new Set(
@@ -121,6 +165,12 @@ export class LibraryDatabase {
     }
     if (!trackColumns.has('album_override')) {
       this.database.exec('ALTER TABLE tracks ADD COLUMN album_override TEXT');
+    }
+    if (!trackColumns.has('language')) {
+      this.database.exec('ALTER TABLE tracks ADD COLUMN language TEXT');
+    }
+    if (!trackColumns.has('language_override')) {
+      this.database.exec('ALTER TABLE tracks ADD COLUMN language_override TEXT');
     }
     if (!trackColumns.has('has_embedded_lyrics')) {
       this.database.exec(
@@ -153,10 +203,10 @@ export class LibraryDatabase {
   syncRoot(rootPath: string, tracks: ScannedTrack[], discoveredPaths: Set<string>): void {
     const upsert = this.database.prepare(`
       INSERT INTO tracks (
-        id, root_path, file_path, file_name, title, artist, album, duration,
+        id, root_path, file_path, file_name, title, artist, album, language, duration,
         file_size, modified_at, lrc_path, has_embedded_lyrics, artwork_mime, artwork, updated_at
       ) VALUES (
-        @id, @rootPath, @filePath, @fileName, @title, @artist, @album, @duration,
+        @id, @rootPath, @filePath, @fileName, @title, @artist, @album, @language, @duration,
         @fileSize, @modifiedAt, @lrcPath, @hasEmbeddedLyrics, @artworkMime, @artwork, @updatedAt
       )
       ON CONFLICT(file_path) DO UPDATE SET
@@ -165,6 +215,7 @@ export class LibraryDatabase {
         title = excluded.title,
         artist = excluded.artist,
         album = excluded.album,
+        language = excluded.language,
         duration = excluded.duration,
         file_size = excluded.file_size,
         modified_at = excluded.modified_at,
@@ -188,7 +239,12 @@ export class LibraryDatabase {
       );
       for (const track of tracks) {
         if (!ignoredPaths.has(track.filePath)) {
-          upsert.run({ ...track, hasEmbeddedLyrics: track.hasEmbeddedLyrics ? 1 : 0, updatedAt });
+          upsert.run({
+            ...track,
+            language: track.language ?? null,
+            hasEmbeddedLyrics: track.hasEmbeddedLyrics ? 1 : 0,
+            updatedAt,
+          });
         }
       }
       const existingRows = existing.all(rootPath) as Array<{ file_path: string }>;
@@ -205,6 +261,7 @@ export class LibraryDatabase {
                 COALESCE(NULLIF(title_override, ''), title) AS title,
                 COALESCE(NULLIF(artist_override, ''), artist) AS artist,
                 COALESCE(NULLIF(album_override, ''), album) AS album,
+                COALESCE(language_override, language) AS language,
                 duration, file_size,
                 modified_at, lrc_path, has_embedded_lyrics, artwork_mime
          FROM tracks
@@ -225,6 +282,7 @@ export class LibraryDatabase {
       title: row.title,
       artist: row.artist,
       album: row.album,
+      language: normalizeTrackLanguage(row.language),
       duration: row.duration,
       fileSize: row.file_size,
       modifiedAt: row.modified_at,
@@ -305,15 +363,18 @@ export class LibraryDatabase {
     const album = metadata.album === undefined
       ? null
       : metadata.album || UNKNOWN_ALBUM;
+    const language = metadata.language || null;
     const result = this.database
       .prepare(
         `UPDATE tracks
          SET title_override = COALESCE(?, title_override),
              artist_override = COALESCE(?, artist_override),
              album_override = COALESCE(?, album_override),
+             language_override = COALESCE(?, language_override),
              title = COALESCE(?, title),
              artist = COALESCE(?, artist),
              album = COALESCE(?, album),
+             language = COALESCE(?, language),
              updated_at = ?
          WHERE id = ?`,
       )
@@ -321,9 +382,11 @@ export class LibraryDatabase {
         metadata.title?.trim() ?? null,
         metadata.artist?.trim() ?? null,
         metadata.album?.trim() ?? null,
+        metadata.language ?? null,
         title,
         artist,
         album,
+        language,
         Date.now(),
         id,
       );
@@ -416,12 +479,109 @@ export class LibraryDatabase {
       .run(task.trackId, task.id, task.status, JSON.stringify(task), task.updatedAt);
   }
 
+  getBilingualLyricsTask(trackId: string): BilingualLyricsTask | undefined {
+    const row = this.database
+      .prepare('SELECT payload_json FROM bilingual_lyrics_tasks WHERE track_id = ?')
+      .get(trackId) as { payload_json: string } | undefined;
+    if (!row) return undefined;
+    try {
+      return JSON.parse(row.payload_json) as BilingualLyricsTask;
+    } catch {
+      return undefined;
+    }
+  }
+
+  saveBilingualLyricsTask(task: BilingualLyricsTask): void {
+    this.database
+      .prepare(
+        `INSERT INTO bilingual_lyrics_tasks(track_id, task_id, status, payload_json, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(track_id) DO UPDATE SET
+           task_id = excluded.task_id,
+           status = excluded.status,
+           payload_json = excluded.payload_json,
+           updated_at = excluded.updated_at`,
+      )
+      .run(task.trackId, task.id, task.status, JSON.stringify(task), task.updatedAt);
+  }
+
   getArtwork(id: string): StoredArtwork | undefined {
     const row = this.database
       .prepare('SELECT artwork_mime, artwork FROM tracks WHERE id = ?')
       .get(id) as { artwork_mime: string | null; artwork: Buffer | null } | undefined;
     if (!row?.artwork_mime || !row.artwork) return undefined;
     return { mime: row.artwork_mime, data: row.artwork };
+  }
+
+  getPlaybackState(): PlaybackStateSnapshot {
+    const rows = this.database
+      .prepare(
+        `SELECT track_id, position_ms, duration_ms, completed, reason, updated_at
+         FROM playback_progress
+         ORDER BY updated_at DESC`,
+      )
+      .all() as PlaybackProgressRow[];
+    const session = this.database
+      .prepare('SELECT current_track_id FROM playback_session WHERE singleton_id = 1')
+      .get() as { current_track_id: string | null } | undefined;
+    return {
+      lastTrackId: session?.current_track_id ?? null,
+      progress: rows.map((row) => this.toPlaybackProgress(row)),
+    };
+  }
+
+  savePlaybackCheckpoint(checkpoint: PlaybackCheckpoint): PlaybackProgress {
+    const now = Date.now();
+    const durationMs = Math.max(0, checkpoint.durationMs);
+    const requestedPosition = checkpoint.completed ? 0 : Math.max(0, checkpoint.positionMs);
+    const positionMs = durationMs > 0
+      ? Math.min(requestedPosition, durationMs)
+      : requestedPosition;
+    const progress: PlaybackProgress = {
+      ...checkpoint,
+      positionMs,
+      durationMs,
+      updatedAt: now,
+    };
+    this.database.transaction(() => {
+      this.database.prepare(
+        `INSERT INTO playback_progress(
+           track_id, position_ms, duration_ms, completed, reason, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(track_id) DO UPDATE SET
+           position_ms = excluded.position_ms,
+           duration_ms = excluded.duration_ms,
+           completed = excluded.completed,
+           reason = excluded.reason,
+           updated_at = excluded.updated_at`,
+      ).run(
+        progress.trackId,
+        progress.positionMs,
+        progress.durationMs,
+        progress.completed ? 1 : 0,
+        progress.reason,
+        progress.updatedAt,
+      );
+      this.database.prepare(
+        `INSERT INTO playback_session(singleton_id, current_track_id, updated_at)
+         VALUES (1, ?, ?)
+         ON CONFLICT(singleton_id) DO UPDATE SET
+           current_track_id = excluded.current_track_id,
+           updated_at = excluded.updated_at`,
+      ).run(progress.trackId, progress.updatedAt);
+    })();
+    return progress;
+  }
+
+  private toPlaybackProgress(row: PlaybackProgressRow): PlaybackProgress {
+    return {
+      trackId: row.track_id,
+      positionMs: row.position_ms,
+      durationMs: row.duration_ms,
+      completed: Boolean(row.completed),
+      reason: row.reason,
+      updatedAt: row.updated_at,
+    };
   }
 
   close(): void {

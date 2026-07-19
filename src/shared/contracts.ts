@@ -1,3 +1,13 @@
+import type { TrackLanguage } from './track-language.js';
+
+export {
+  getTrackLanguageLabel,
+  isTrackLanguage,
+  normalizeTrackLanguage,
+  TRACK_LANGUAGE_OPTIONS,
+} from './track-language.js';
+export type { TrackLanguage } from './track-language.js';
+
 export type LyricsStatus = 'idle' | 'loading' | 'loaded' | 'missing' | 'error';
 
 export type OnlineLyricsTaskStatus =
@@ -183,10 +193,78 @@ export interface LocalLyricsProofreadProgress {
   timestamp: number;
 }
 
+export type BilingualLyricsTaskStatus =
+  | 'idle'
+  | 'analyzing'
+  | 'researching'
+  | 'translating'
+  | 'review'
+  | 'cancelled'
+  | 'failed';
+
+export type BilingualLyricsTranslationStyle = 'natural' | 'lyrical' | 'singable';
+
+export type BilingualLyricsErrorCode =
+  | 'invalid_request'
+  | 'track_not_found'
+  | 'lyrics_missing'
+  | 'invalid_lrc'
+  | 'task_in_progress'
+  | 'codex_unavailable'
+  | 'codex_failed'
+  | 'invalid_response'
+  | 'source_changed'
+  | 'write_in_progress'
+  | 'kid3_not_found'
+  | 'kid3_failed'
+  | 'verification_failed'
+  | 'task_interrupted'
+  | 'cancelled';
+
+export interface BilingualLyricsTaskError {
+  code: BilingualLyricsErrorCode;
+  message: string;
+}
+
+export interface BilingualLyricsSource {
+  title: string;
+  url: string;
+}
+
+export interface BilingualLyricsLine {
+  id: string;
+  time: number;
+  originalText: string;
+  translatedText: string;
+}
+
+export interface BilingualLyricsTask {
+  id: string;
+  trackId: string;
+  status: BilingualLyricsTaskStatus;
+  progress: number;
+  message: string;
+  targetLanguage: 'zh-CN';
+  style: BilingualLyricsTranslationStyle;
+  sourceRevision?: string;
+  lines: BilingualLyricsLine[];
+  summary?: string;
+  sources: BilingualLyricsSource[];
+  tagWriteStatus: 'not_started' | 'writing' | 'verified' | 'failed';
+  error?: BilingualLyricsTaskError;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface BilingualLyricsStartOptions {
+  style?: BilingualLyricsTranslationStyle;
+}
+
 export interface TrackMetadata {
   title: string;
   artist: string;
   album: string;
+  language: TrackLanguage | '';
 }
 
 export type TrackMetadataUpdate = Partial<TrackMetadata>;
@@ -200,6 +278,7 @@ export interface Track {
   title: string;
   artist: string;
   album: string;
+  language: TrackLanguage | null;
   duration: number;
   fileSize: number;
   modifiedAt: number;
@@ -217,6 +296,34 @@ export interface LibraryRoot {
 export interface LibrarySnapshot {
   tracks: Track[];
   roots: LibraryRoot[];
+}
+
+export type PlaybackCheckpointReason =
+  | 'periodic'
+  | 'track-selected'
+  | 'track-switch'
+  | 'pause'
+  | 'seek'
+  | 'file-operation'
+  | 'app-hidden'
+  | 'app-close'
+  | 'ended';
+
+export interface PlaybackCheckpoint {
+  trackId: string;
+  positionMs: number;
+  durationMs: number;
+  completed: boolean;
+  reason: PlaybackCheckpointReason;
+}
+
+export interface PlaybackProgress extends PlaybackCheckpoint {
+  updatedAt: number;
+}
+
+export interface PlaybackStateSnapshot {
+  lastTrackId: string | null;
+  progress: PlaybackProgress[];
 }
 
 export interface ScanWarning {
@@ -264,6 +371,10 @@ export interface LyralumeApi {
     onChanged(callback: (snapshot: LibrarySnapshot) => void): () => void;
     onScanProgress(callback: (progress: ScanProgress) => void): () => void;
   };
+  playback: {
+    getState(): Promise<PlaybackStateSnapshot>;
+    saveCheckpoint(checkpoint: PlaybackCheckpoint): Promise<PlaybackProgress>;
+  };
   lyrics: {
     load(trackId: string): Promise<LyricsDocument>;
     writeAdjustedTiming(
@@ -296,9 +407,19 @@ export interface LyralumeApi {
     onLocalProofreadProgress(
       callback: (progress: LocalLyricsProofreadProgress) => void,
     ): () => void;
+    getBilingualTask(trackId: string): Promise<BilingualLyricsTask>;
+    startBilingual(
+      trackId: string,
+      options?: BilingualLyricsStartOptions,
+    ): Promise<BilingualLyricsTask>;
+    cancelBilingual(trackId: string): Promise<BilingualLyricsTask>;
+    writeBilingualTag(trackId: string): Promise<BilingualLyricsTask>;
+    onBilingualTaskChanged(callback: (task: BilingualLyricsTask) => void): () => void;
   };
   app: {
     getVersion(): Promise<string>;
+    onPlaybackFlushRequested(callback: (requestId: string) => void): () => void;
+    completePlaybackFlush(requestId: string): void;
   };
 }
 
@@ -311,6 +432,10 @@ export const IPC_CHANNELS = {
   libraryRescan: 'library:rescan',
   libraryChanged: 'library:changed',
   libraryScanProgress: 'library:scan-progress',
+  playbackState: 'playback:state',
+  playbackCheckpoint: 'playback:checkpoint',
+  playbackFlushRequested: 'playback:flush-requested',
+  playbackFlushComplete: 'playback:flush-complete',
   lyricsLoad: 'lyrics:load',
   lyricsWriteAdjustedTiming: 'lyrics:write-adjusted-timing',
   lyricsOnlineTask: 'lyrics:online-task',
@@ -329,5 +454,10 @@ export const IPC_CHANNELS = {
   lyricsLocalWriteTag: 'lyrics:local-write-tag',
   lyricsLocalChanged: 'lyrics:local-changed',
   lyricsLocalProofreadProgress: 'lyrics:local-proofread-progress',
+  lyricsBilingualTask: 'lyrics:bilingual-task',
+  lyricsBilingualStart: 'lyrics:bilingual-start',
+  lyricsBilingualCancel: 'lyrics:bilingual-cancel',
+  lyricsBilingualWriteTag: 'lyrics:bilingual-write-tag',
+  lyricsBilingualChanged: 'lyrics:bilingual-changed',
   appVersion: 'app:version',
 } as const;

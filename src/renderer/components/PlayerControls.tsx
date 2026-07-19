@@ -4,6 +4,18 @@ import { currentTrackFromState, useAppStore } from '../store/useAppStore';
 import { Artwork } from './Artwork';
 import { Icon } from './Icon';
 
+const PLAYBACK_MODE_LABELS = {
+  sequence: '顺序播放',
+  shuffle: '列表随机',
+  'repeat-one': '单曲循环',
+} as const;
+
+const PLAYBACK_MODE_ICONS = {
+  sequence: 'sequence',
+  shuffle: 'shuffle',
+  'repeat-one': 'repeatOne',
+} as const;
+
 export function PlayerControls() {
   const track = useAppStore(currentTrackFromState);
   const isPlaying = useAppStore((state) => state.isPlaying);
@@ -11,9 +23,11 @@ export function PlayerControls() {
   const duration = useAppStore((state) => state.duration);
   const volume = useAppStore((state) => state.volume);
   const playbackError = useAppStore((state) => state.playbackError);
+  const playbackMode = useAppStore((state) => state.playbackMode);
   const togglePlayback = useAppStore((state) => state.togglePlayback);
   const nextTrack = useAppStore((state) => state.nextTrack);
   const previousTrack = useAppStore((state) => state.previousTrack);
+  const cyclePlaybackMode = useAppStore((state) => state.cyclePlaybackMode);
   const setVolume = useAppStore((state) => state.setVolume);
   const safeDuration = Math.max(duration || track?.duration || 0, 0);
 
@@ -29,6 +43,17 @@ export function PlayerControls() {
 
       <div className="transport">
         <div className="transport__buttons">
+          <button
+            className="transport__mode"
+            type="button"
+            onClick={cyclePlaybackMode}
+            data-mode={playbackMode}
+            aria-label={`播放模式：${PLAYBACK_MODE_LABELS[playbackMode]}，点击切换`}
+            title={PLAYBACK_MODE_LABELS[playbackMode]}
+          >
+            <Icon name={PLAYBACK_MODE_ICONS[playbackMode]} />
+            <span>{PLAYBACK_MODE_LABELS[playbackMode]}</span>
+          </button>
           <button type="button" onClick={previousTrack} disabled={!track} aria-label="上一首"><Icon name="back" /></button>
           <button className="transport__play" type="button" onClick={togglePlayback} disabled={!track && useAppStore.getState().tracks.length === 0} aria-label={isPlaying ? '暂停' : '播放'}>
             <Icon name={isPlaying ? 'pause' : 'play'} />

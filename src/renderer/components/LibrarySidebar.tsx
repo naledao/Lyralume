@@ -1,5 +1,6 @@
 import { Icon } from './Icon';
 import { useAppStore } from '../store/useAppStore';
+import { persistCurrentPlaybackCheckpoint } from '../audio/playbackCheckpoints';
 
 export function LibrarySidebar() {
   const roots = useAppStore((state) => state.roots);
@@ -12,6 +13,11 @@ export function LibrarySidebar() {
   const progress = scanProgress && scanProgress.total > 0
     ? Math.round((scanProgress.processed / scanProgress.total) * 100)
     : 0;
+  const checkpointThen = (operation: () => Promise<void>): void => {
+    void persistCurrentPlaybackCheckpoint()
+      .catch((error) => console.warn('Playback progress could not be saved before scan', error))
+      .then(operation);
+  };
 
   return (
     <aside className="sidebar">
@@ -38,7 +44,7 @@ export function LibrarySidebar() {
 
       <div className="sidebar__section-heading">
         <span>音乐文件夹</span>
-        <button type="button" onClick={() => void chooseDirectory()} aria-label="添加音乐文件夹" disabled={scanning}>
+        <button type="button" onClick={() => checkpointThen(chooseDirectory)} aria-label="添加音乐文件夹" disabled={scanning}>
           <Icon name="add" />
         </button>
       </div>
@@ -62,11 +68,11 @@ export function LibrarySidebar() {
             <small>{scanProgress?.currentFile ?? '整理音乐库…'}</small>
           </div>
         )}
-        <button className="button button--primary" type="button" onClick={() => void chooseDirectory()} disabled={scanning}>
+        <button className="button button--primary" type="button" onClick={() => checkpointThen(chooseDirectory)} disabled={scanning}>
           <Icon name="add" />
           选择音乐文件夹
         </button>
-        <button className="button button--ghost" type="button" onClick={() => void rescan()} disabled={scanning || roots.length === 0}>
+        <button className="button button--ghost" type="button" onClick={() => checkpointThen(rescan)} disabled={scanning || roots.length === 0}>
           <Icon name="refresh" className={scanning ? 'spin' : ''} />
           重新扫描
         </button>

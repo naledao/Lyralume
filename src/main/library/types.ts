@@ -1,3 +1,5 @@
+import type { TrackLanguage } from '../../shared/contracts.js';
+
 export interface ScannedTrack {
   id: string;
   rootPath: string;
@@ -6,6 +8,7 @@ export interface ScannedTrack {
   title: string;
   artist: string;
   album: string;
+  language: TrackLanguage | null;
   duration: number;
   fileSize: number;
   modifiedAt: number;

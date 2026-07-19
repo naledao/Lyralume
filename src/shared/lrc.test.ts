@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findActiveLyricIndex, parseLrc } from './lrc';
+import { findActiveLyricIndex, groupLyricLines, parseLrc } from './lrc';
 
 describe('parseLrc', () => {
   it('parses metadata, multiple timestamps and millisecond precision', () => {
@@ -23,6 +23,40 @@ describe('parseLrc', () => {
     const parsed = parseLrc('[00:61.00]bad\nplain text\n[01:02.5]good');
     expect(parsed.lines).toHaveLength(1);
     expect(parsed.lines[0]).toMatchObject({ time: 62.5, text: 'good' });
+  });
+});
+
+describe('groupLyricLines', () => {
+  it('groups bilingual rows with the same timestamp into one playback cue', () => {
+    const lines = parseLrc(`
+      [00:01.00]她在城东，每天都忙着工作
+      [00:01.00]On the East-side of the city, she was working every day
+      [00:04.00]Next line
+    `).lines;
+
+    const cues = groupLyricLines(lines);
+
+    expect(cues).toHaveLength(2);
+    expect(cues[0]).toMatchObject({
+      time: 1,
+      lines: [
+        { text: 'On the East-side of the city, she was working every day', role: 'original' },
+        { text: '她在城东，每天都忙着工作', role: 'translation' },
+      ],
+    });
+    expect(cues[1].lines).toEqual([
+      expect.objectContaining({ text: 'Next line', role: 'original' }),
+    ]);
+  });
+
+  it('preserves input order when language roles are ambiguous', () => {
+    const lines = parseLrc('[00:01.00]第一行\n[00:01.00]第二行').lines;
+    const [cue] = groupLyricLines(lines);
+
+    expect(cue.lines.map((line) => [line.text, line.role])).toEqual([
+      ['第一行', 'original'],
+      ['第二行', 'translation'],
+    ]);
   });
 });
 

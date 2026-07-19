@@ -4,7 +4,11 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseFile } from 'music-metadata';
-import type { TrackMetadata, TrackMetadataUpdate } from '../../shared/contracts.js';
+import {
+  normalizeTrackLanguage,
+  type TrackMetadata,
+  type TrackMetadataUpdate,
+} from '../../shared/contracts.js';
 import { parseLrc } from '../../shared/lrc.js';
 
 interface ProcessResult {
@@ -122,7 +126,8 @@ const readEmbeddedSylt: SyltReader = async (audioPath) => {
 
 export async function readEmbeddedLyricsAsLrc(audioPath: string): Promise<string | undefined> {
   const frames = await readEmbeddedSylt(audioPath);
-  const frame = frames.find((lyrics) => lyrics.descriptor === 'Lyralume / Time Adjusted')
+  const frame = frames.find((lyrics) => lyrics.descriptor === 'Lyralume / Bilingual zh-CN')
+    ?? frames.find((lyrics) => lyrics.descriptor === 'Lyralume / Time Adjusted')
     ?? frames.find((lyrics) => lyrics.descriptor === 'Lyralume / LRCLIB')
     ?? frames.find((lyrics) => lyrics.syncText.length > 0);
   const lines = (frame?.syncText ?? []).flatMap((line) => {
@@ -142,6 +147,7 @@ const readTrackMetadata: TrackMetadataReader = async (audioPath) => {
     title: metadata.common.title,
     artist: metadata.common.artist,
     album: metadata.common.album,
+    language: normalizeTrackLanguage(metadata.common.language) ?? undefined,
   };
 };
 
@@ -155,11 +161,16 @@ export class Kid3Adapter {
   ) {}
 
   async writeMetadataAndVerify(audioPath: string, metadata: TrackMetadataUpdate): Promise<void> {
-    const fields = (['title', 'artist', 'album'] as const).filter(
+    const fields = (['title', 'artist', 'album', 'language'] as const).filter(
       (field) => metadata[field] !== undefined,
     );
     if (fields.length === 0) throw new Kid3Error('command', '没有需要写入的歌曲信息');
-    const frameNames = { title: 'Title', artist: 'Artist', album: 'Album' } as const;
+    const frameNames = {
+      title: 'Title',
+      artist: 'Artist',
+      album: 'Album',
+      language: 'Language',
+    } as const;
     const commands = fields.flatMap((field) => [
       '-c',
       `set ${frameNames[field]} ${quoteKid3Text(metadata[field] as string)} 2`,

@@ -46,6 +46,7 @@ async function setup(
     title: 'Track',
     artist: 'Artist',
     album: 'Album',
+    language: null,
     duration: 123.4,
     fileSize: 13,
     modifiedAt: 1,

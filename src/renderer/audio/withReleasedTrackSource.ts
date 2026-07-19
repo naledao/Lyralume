@@ -1,6 +1,7 @@
 import type { Track } from '../../shared/contracts';
 import { useAppStore } from '../store/useAppStore';
 import { audioEngine } from './AudioEngine';
+import { checkpointFromSnapshot, persistPlaybackCheckpoint } from './playbackCheckpoints';
 
 let sourceOperationQueue: Promise<unknown> = Promise.resolve();
 
@@ -18,14 +19,26 @@ export async function withReleasedTrackSource<T>(
     if (state.currentTrackId !== track.id) return operation();
 
     const wasPlaying = state.isPlaying;
-    const savedPosition = state.currentTime;
+    const snapshot = audioEngine.getPlaybackSnapshot();
+    const savedPosition = snapshot.hasSource ? snapshot.currentTime : state.currentTime;
+    let sourceReleased = false;
     state.setPlaying(false);
-    audioEngine.releaseSource();
+    audioEngine.pause();
     try {
+      await persistPlaybackCheckpoint(checkpointFromSnapshot(
+        track.id,
+        { ...snapshot, currentTime: savedPosition },
+        'file-operation',
+        { fallbackDuration: track.duration },
+      ));
+      audioEngine.releaseSource();
+      sourceReleased = true;
       return await operation();
     } finally {
       if (useAppStore.getState().currentTrackId === track.id) {
-        await audioEngine.restoreSource(track.playbackUrl, savedPosition);
+        if (sourceReleased) {
+          await audioEngine.restoreSource(track.playbackUrl, savedPosition);
+        }
         useAppStore.getState().setPlaybackTime(savedPosition);
         useAppStore.getState().setPlaying(wasPlaying);
       }

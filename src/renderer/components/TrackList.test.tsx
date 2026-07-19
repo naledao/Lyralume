@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LyralumeApi, Track } from '../../shared/contracts';
 import { useAppStore } from '../store/useAppStore';
 import { TrackList } from './TrackList';
@@ -9,6 +9,7 @@ const item: Track = {
   title: 'Editable Track',
   artist: '未知艺术家',
   album: '未知专辑',
+  language: null,
   fileName: 'Editable Track.flac',
   duration: 60,
   fileSize: 100,
@@ -29,6 +30,10 @@ const api = {
     onChanged: vi.fn(() => () => undefined),
     onScanProgress: vi.fn(() => () => undefined),
   },
+  playback: {
+    getState: vi.fn(),
+    saveCheckpoint: vi.fn(),
+  },
   lyrics: {
     load: vi.fn(),
     writeAdjustedTiming: vi.fn(),
@@ -48,8 +53,17 @@ const api = {
     writeLocalTag: vi.fn(),
     onLocalTaskChanged: vi.fn(() => () => undefined),
     onLocalProofreadProgress: vi.fn(() => () => undefined),
+    getBilingualTask: vi.fn(),
+    startBilingual: vi.fn(),
+    cancelBilingual: vi.fn(),
+    writeBilingualTag: vi.fn(),
+    onBilingualTaskChanged: vi.fn(() => () => undefined),
   },
-  app: { getVersion: vi.fn() },
+  app: {
+    getVersion: vi.fn(),
+    onPlaybackFlushRequested: vi.fn(() => () => undefined),
+    completePlaybackFlush: vi.fn(),
+  },
 } satisfies LyralumeApi;
 
 beforeEach(() => {
@@ -66,7 +80,27 @@ beforeEach(() => {
   });
 });
 
+afterEach(() => cleanup());
+
 describe('TrackList metadata editing', () => {
+  it('shows the fixed language tags and saves a selection', async () => {
+    api.library.updateMetadata.mockResolvedValue({
+      tracks: [{ ...item, language: 'zho' }],
+      roots: [],
+    });
+    render(<TrackList tracks={[item]} />);
+
+    const language = screen.getByRole('combobox', { name: '设置 Editable Track 的语种' });
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
+      '未设置', '中文', '英文', '日文', '纯音乐', '韩语',
+    ]);
+    fireEvent.change(language, { target: { value: 'zho' } });
+
+    await waitFor(() => expect(api.library.updateMetadata).toHaveBeenCalledWith(item.id, {
+      language: 'zho',
+    }));
+  });
+
   it('enters edit mode on double click and saves artist and album', async () => {
     const updated = {
       ...item,

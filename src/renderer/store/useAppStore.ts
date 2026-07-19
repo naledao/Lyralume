@@ -1,5 +1,7 @@
 import { create } from 'zustand';
 import type {
+  BilingualLyricsStartOptions,
+  BilingualLyricsTask,
   LibraryRoot,
   LibrarySnapshot,
   LocalLyricsDraftUpdate,
@@ -10,11 +12,40 @@ import type {
   LocalLyricsTask,
   LyricsStatus,
   OnlineLyricsTask,
+  PlaybackProgress,
+  PlaybackStateSnapshot,
   ScanProgress,
   Track,
   TrackMetadataUpdate,
 } from '../../shared/contracts';
+import { getTrackLanguageLabel } from '../../shared/contracts';
 import { parseLrc, type LyricLine } from '../../shared/lrc';
+
+export type PlaybackMode = 'sequence' | 'shuffle' | 'repeat-one';
+
+const PLAYBACK_MODES: PlaybackMode[] = ['sequence', 'shuffle', 'repeat-one'];
+
+function shuffleQueue(queueIds: string[], currentTrackId: string | null): string[] {
+  const remaining = queueIds.filter((id) => id !== currentTrackId);
+  for (let index = remaining.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [remaining[index], remaining[swapIndex]] = [remaining[swapIndex], remaining[index]];
+  }
+  return currentTrackId && queueIds.includes(currentTrackId)
+    ? [currentTrackId, ...remaining]
+    : remaining;
+}
+
+function reconcileShuffleQueue(queueIds: string[], shuffledIds: string[]): string[] {
+  const validIds = new Set(queueIds);
+  const retained = shuffledIds.filter((id) => validIds.has(id));
+  const retainedIds = new Set(retained);
+  const additions = shuffleQueue(
+    queueIds.filter((id) => !retainedIds.has(id)),
+    null,
+  );
+  return [...retained, ...additions];
+}
 
 interface AppState {
   tracks: Track[];
@@ -25,9 +56,12 @@ interface AppState {
   libraryMessage: string | null;
   currentTrackId: string | null;
   queueIds: string[];
+  playbackMode: PlaybackMode;
+  shuffleQueueIds: string[];
   isPlaying: boolean;
   currentTime: number;
   duration: number;
+  playbackProgress: Record<string, PlaybackProgress>;
   volume: number;
   playbackError: string | null;
   lyricsStatus: LyricsStatus;
@@ -50,9 +84,14 @@ interface AppState {
   localLyricsModelSettings: LocalLyricsModelSettings | null;
   localLyricsModelSettingsBusy: boolean;
   localLyricsModelSettingsError: string | null;
+  bilingualLyricsTask: BilingualLyricsTask | null;
+  bilingualLyricsTasks: Record<string, BilingualLyricsTask>;
+  bilingualLyricsBusy: boolean;
   visualsEnabled: boolean;
   initialize(): Promise<void>;
   applySnapshot(snapshot: LibrarySnapshot): void;
+  applyPlaybackState(snapshot: PlaybackStateSnapshot): void;
+  applyPlaybackProgress(progress: PlaybackProgress): void;
   chooseDirectory(): Promise<void>;
   importDropped(files: File[]): Promise<void>;
   updateTrackMetadata(trackId: string, metadata: TrackMetadataUpdate): Promise<boolean>;
@@ -64,6 +103,9 @@ interface AppState {
   setPlaying(playing: boolean): void;
   nextTrack(): void;
   previousTrack(): void;
+  handleTrackEnded(): void;
+  setPlaybackMode(mode: PlaybackMode): void;
+  cyclePlaybackMode(): void;
   setPlaybackTime(time: number, duration?: number): void;
   setDuration(duration: number): void;
   setVolume(volume: number): void;
@@ -90,6 +132,11 @@ interface AppState {
     overwriteExisting?: boolean,
   ): Promise<LocalLyricsTask | null>;
   writeLocalLyricsTag(update: LocalLyricsDraftUpdate): Promise<LocalLyricsTask | null>;
+  loadBilingualLyricsTask(trackId: string): Promise<void>;
+  applyBilingualLyricsTask(task: BilingualLyricsTask): void;
+  startBilingualLyrics(options?: BilingualLyricsStartOptions): Promise<void>;
+  cancelBilingualLyrics(): Promise<void>;
+  writeBilingualLyricsTag(): Promise<BilingualLyricsTask | null>;
   writeAdjustedLyricTiming(): Promise<boolean>;
   adjustLyricOffset(deltaMs: number): void;
   resetLyricOffset(): void;
@@ -101,6 +148,20 @@ function normalizedQueue(snapshot: LibrarySnapshot, currentQueue: string[]): str
   const retained = currentQueue.filter((id) => validIds.has(id));
   const retainedSet = new Set(retained);
   return [...retained, ...snapshot.tracks.map((track) => track.id).filter((id) => !retainedSet.has(id))];
+}
+
+function resumeTimeForTrack(
+  track: Track,
+  progress: PlaybackProgress | undefined,
+): number {
+  if (!progress || progress.completed) return 0;
+  const trackDurationMs = Math.round(Math.max(0, track.duration) * 1_000);
+  if (
+    progress.durationMs > 0
+    && trackDurationMs > 0
+    && Math.abs(progress.durationMs - trackDurationMs) > 2_000
+  ) return 0;
+  return Math.min(progress.positionMs / 1_000, Math.max(0, track.duration));
 }
 
 function emptyOnlineTask(trackId: string): OnlineLyricsTask {
@@ -158,6 +219,34 @@ function failedLocalTask(
   };
 }
 
+function failedBilingualTask(
+  trackId: string,
+  current: BilingualLyricsTask | null,
+  message: string,
+): BilingualLyricsTask {
+  const now = Date.now();
+  return {
+    ...(current ?? {
+      id: `bilingual-failed-${trackId}`,
+      trackId,
+      status: 'idle',
+      progress: 0,
+      message,
+      targetLanguage: 'zh-CN',
+      style: 'lyrical',
+      lines: [],
+      sources: [],
+      tagWriteStatus: 'not_started',
+      createdAt: now,
+      updatedAt: now,
+    }),
+    status: 'failed',
+    message,
+    error: { code: 'codex_failed', message },
+    updatedAt: now,
+  };
+}
+
 export const useAppStore = create<AppState>((set, get) => ({
   tracks: [],
   roots: [],
@@ -167,9 +256,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   libraryMessage: null,
   currentTrackId: null,
   queueIds: [],
+  playbackMode: 'sequence',
+  shuffleQueueIds: [],
   isPlaying: false,
   currentTime: 0,
   duration: 0,
+  playbackProgress: {},
   volume: 0.78,
   playbackError: null,
   lyricsStatus: 'idle',
@@ -192,13 +284,25 @@ export const useAppStore = create<AppState>((set, get) => ({
   localLyricsModelSettings: null,
   localLyricsModelSettingsBusy: false,
   localLyricsModelSettingsError: null,
+  bilingualLyricsTask: null,
+  bilingualLyricsTasks: {},
+  bilingualLyricsBusy: false,
   visualsEnabled: true,
 
   initialize: async () => {
     set({ libraryLoading: true, libraryMessage: null });
     try {
-      const snapshot = await window.lyralume.library.getSnapshot();
+      const [snapshot, playbackState] = await Promise.all([
+        window.lyralume.library.getSnapshot(),
+        window.lyralume.playback.getState().catch(() => null),
+      ]);
       get().applySnapshot(snapshot);
+      if (playbackState) {
+        get().applyPlaybackState(playbackState);
+        if (playbackState.lastTrackId && snapshot.tracks.some(
+          (track) => track.id === playbackState.lastTrackId,
+        )) get().selectTrack(playbackState.lastTrackId, false);
+      }
     } catch (error) {
       set({
         libraryMessage: error instanceof Error ? error.message : '音乐库载入失败',
@@ -211,6 +315,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   applySnapshot: (snapshot) => {
     const state = get();
     const queueIds = normalizedQueue(snapshot, state.queueIds);
+    const shuffleQueueIds = reconcileShuffleQueue(queueIds, state.shuffleQueueIds);
     const validTrackIds = new Set(snapshot.tracks.map((track) => track.id));
     const currentStillExists = state.currentTrackId !== null && validTrackIds.has(state.currentTrackId);
     const localLyricsTasks = Object.fromEntries(
@@ -220,10 +325,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       Object.entries(state.localLyricsProofreadProgress)
         .filter(([trackId]) => validTrackIds.has(trackId)),
     );
+    const bilingualLyricsTasks = Object.fromEntries(
+      Object.entries(state.bilingualLyricsTasks)
+        .filter(([trackId]) => validTrackIds.has(trackId)),
+    );
     set({
       tracks: snapshot.tracks,
       roots: snapshot.roots,
       queueIds,
+      shuffleQueueIds,
       currentTrackId: currentStillExists ? state.currentTrackId : null,
       isPlaying: currentStillExists ? state.isPlaying : false,
       currentTime: currentStillExists ? state.currentTime : 0,
@@ -246,7 +356,27 @@ export const useAppStore = create<AppState>((set, get) => ({
       localLyricsProofreadBusy: currentStillExists ? state.localLyricsProofreadBusy : false,
       localLyricsProofreadError: currentStillExists ? state.localLyricsProofreadError : null,
       localLyricsProofreadProgress,
+      bilingualLyricsTask: currentStillExists ? state.bilingualLyricsTask : null,
+      bilingualLyricsTasks,
+      bilingualLyricsBusy: currentStillExists ? state.bilingualLyricsBusy : false,
     });
+  },
+
+  applyPlaybackState: (snapshot) => {
+    set({
+      playbackProgress: Object.fromEntries(
+        snapshot.progress.map((progress) => [progress.trackId, progress]),
+      ),
+    });
+  },
+
+  applyPlaybackProgress: (progress) => {
+    set((state) => ({
+      playbackProgress: {
+        ...state.playbackProgress,
+        [progress.trackId]: progress,
+      },
+    }));
   },
 
   chooseDirectory: async () => {
@@ -287,16 +417,28 @@ export const useAppStore = create<AppState>((set, get) => ({
   updateTrackMetadata: async (trackId, metadata) => {
     const track = get().tracks.find((item) => item.id === trackId);
     if (!track) return false;
-    set({ libraryMessage: `正在将《${track.title}》的歌曲信息写入原文件…` });
+    const languageOnly = metadata.language !== undefined && Object.keys(metadata).length === 1;
+    const languageLabel = getTrackLanguageLabel(metadata.language || null);
+    set({
+      libraryMessage: languageOnly
+        ? `正在将《${track.title}》的语种设为${languageLabel}…`
+        : `正在将《${track.title}》的歌曲信息写入原文件…`,
+    });
     try {
       const snapshot = await window.lyralume.library.updateMetadata(trackId, metadata);
       get().applySnapshot(snapshot);
       set({
-        libraryMessage: `已将《${metadata.title?.trim() || track.title}》的歌曲信息写入原文件并验证`,
+        libraryMessage: languageOnly
+          ? `已将《${track.title}》的语种设为${languageLabel}`
+          : `已将《${metadata.title?.trim() || track.title}》的歌曲信息写入原文件并验证`,
       });
       return true;
     } catch (error) {
-      set({ libraryMessage: error instanceof Error ? error.message : '歌曲信息写入原文件失败' });
+      set({
+        libraryMessage: error instanceof Error
+          ? error.message
+          : languageOnly ? '语种保存失败' : '歌曲信息写入原文件失败',
+      });
       return false;
     }
   },
@@ -343,12 +485,14 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   selectTrack: (trackId, play = true) => {
     const state = get();
-    if (!state.tracks.some((track) => track.id === trackId)) return;
+    const track = state.tracks.find((item) => item.id === trackId);
+    if (!track) return;
+    const resumeTime = resumeTimeForTrack(track, state.playbackProgress[trackId]);
     set({
       currentTrackId: trackId,
       isPlaying: play,
-      currentTime: 0,
-      duration: 0,
+      currentTime: resumeTime,
+      duration: track.duration,
       playbackError: null,
       lyricsStatus: 'loading',
       lyricLines: [],
@@ -365,16 +509,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       localLyricsBusy: false,
       localLyricsProofreadBusy: false,
       localLyricsProofreadError: null,
+      bilingualLyricsTask: state.bilingualLyricsTasks[trackId] ?? null,
+      bilingualLyricsBusy: false,
     });
     void get().loadLyrics(trackId);
     void get().loadOnlineLyricsTask(trackId);
     void get().loadLocalLyricsTask(trackId);
+    void get().loadBilingualLyricsTask(trackId);
   },
 
   togglePlayback: () => {
     const state = get();
     if (!state.currentTrackId && state.queueIds.length > 0) {
-      state.selectTrack(state.queueIds[0], true);
+      const firstId = state.playbackMode === 'shuffle'
+        ? (state.shuffleQueueIds[0] ?? state.queueIds[0])
+        : state.queueIds[0];
+      state.selectTrack(firstId, true);
       return;
     }
     if (state.currentTrackId) set({ isPlaying: !state.isPlaying, playbackError: null });
@@ -385,6 +535,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   nextTrack: () => {
     const state = get();
     if (state.queueIds.length === 0) return;
+    if (state.playbackMode === 'shuffle') {
+      let order = reconcileShuffleQueue(state.queueIds, state.shuffleQueueIds);
+      const index = state.currentTrackId ? order.indexOf(state.currentTrackId) : -1;
+      let nextId: string;
+      if (index < 0) {
+        nextId = order[0];
+      } else if (index < order.length - 1) {
+        nextId = order[index + 1];
+      } else {
+        order = shuffleQueue(state.queueIds, state.currentTrackId);
+        nextId = order[1] ?? order[0];
+      }
+      set({ shuffleQueueIds: order });
+      state.selectTrack(nextId, true);
+      return;
+    }
     const index = state.currentTrackId ? state.queueIds.indexOf(state.currentTrackId) : -1;
     const nextId = state.queueIds[(index + 1 + state.queueIds.length) % state.queueIds.length];
     state.selectTrack(nextId, true);
@@ -393,9 +559,53 @@ export const useAppStore = create<AppState>((set, get) => ({
   previousTrack: () => {
     const state = get();
     if (state.queueIds.length === 0) return;
+    if (state.playbackMode === 'shuffle') {
+      const order = reconcileShuffleQueue(state.queueIds, state.shuffleQueueIds);
+      const index = state.currentTrackId ? order.indexOf(state.currentTrackId) : 0;
+      const previousId = order[(index - 1 + order.length) % order.length];
+      set({ shuffleQueueIds: order });
+      state.selectTrack(previousId, true);
+      return;
+    }
     const index = state.currentTrackId ? state.queueIds.indexOf(state.currentTrackId) : 0;
     const previousId = state.queueIds[(index - 1 + state.queueIds.length) % state.queueIds.length];
     state.selectTrack(previousId, true);
+  },
+
+  handleTrackEnded: () => {
+    const state = get();
+    if (!state.currentTrackId) return;
+    if (state.playbackMode === 'repeat-one') {
+      set({ currentTime: 0, isPlaying: true, playbackError: null });
+      return;
+    }
+    if (state.playbackMode === 'shuffle') {
+      state.nextTrack();
+      return;
+    }
+    const index = state.queueIds.indexOf(state.currentTrackId);
+    if (index >= 0 && index < state.queueIds.length - 1) {
+      state.selectTrack(state.queueIds[index + 1], true);
+      return;
+    }
+    set({ currentTime: 0, isPlaying: false });
+  },
+
+  setPlaybackMode: (playbackMode) => {
+    if (!PLAYBACK_MODES.includes(playbackMode)) return;
+    const state = get();
+    set({
+      playbackMode,
+      ...(playbackMode === 'shuffle'
+        ? { shuffleQueueIds: shuffleQueue(state.queueIds, state.currentTrackId) }
+        : {}),
+    });
+  },
+
+  cyclePlaybackMode: () => {
+    const state = get();
+    const index = PLAYBACK_MODES.indexOf(state.playbackMode);
+    state.setPlaybackMode(PLAYBACK_MODES[(index + 1) % PLAYBACK_MODES.length]);
   },
 
   setPlaybackTime: (currentTime, duration) =>
@@ -805,6 +1015,92 @@ export const useAppStore = create<AppState>((set, get) => ({
       return task;
     } finally {
       if (get().currentTrackId === trackId) set({ localLyricsBusy: false });
+    }
+  },
+
+  loadBilingualLyricsTask: async (trackId) => {
+    try {
+      const task = await window.lyralume.lyrics.getBilingualTask(trackId);
+      set((state) => ({
+        bilingualLyricsTasks: { ...state.bilingualLyricsTasks, [trackId]: task },
+        ...(state.currentTrackId === trackId ? { bilingualLyricsTask: task } : {}),
+      }));
+    } catch (error) {
+      if (get().currentTrackId === trackId) {
+        set({
+          bilingualLyricsTask: failedBilingualTask(
+            trackId,
+            get().bilingualLyricsTask,
+            error instanceof Error ? error.message : '双语歌词任务读取失败',
+          ),
+        });
+      }
+    }
+  },
+
+  applyBilingualLyricsTask: (task) => {
+    set((state) => ({
+      bilingualLyricsTasks: { ...state.bilingualLyricsTasks, [task.trackId]: task },
+      ...(state.currentTrackId === task.trackId ? { bilingualLyricsTask: task } : {}),
+    }));
+  },
+
+  startBilingualLyrics: async (options = {}) => {
+    const trackId = get().currentTrackId;
+    if (!trackId || get().bilingualLyricsBusy) return;
+    set({ bilingualLyricsBusy: true });
+    try {
+      const task = await window.lyralume.lyrics.startBilingual(trackId, options);
+      get().applyBilingualLyricsTask(task);
+    } catch (error) {
+      const task = failedBilingualTask(
+        trackId,
+        get().bilingualLyricsTask,
+        error instanceof Error ? error.message : 'Codex 双语译配启动失败',
+      );
+      get().applyBilingualLyricsTask(task);
+    } finally {
+      set({ bilingualLyricsBusy: false });
+    }
+  },
+
+  cancelBilingualLyrics: async () => {
+    const trackId = get().currentTrackId;
+    if (!trackId) return;
+    try {
+      const task = await window.lyralume.lyrics.cancelBilingual(trackId);
+      get().applyBilingualLyricsTask(task);
+    } catch (error) {
+      const task = failedBilingualTask(
+        trackId,
+        get().bilingualLyricsTask,
+        error instanceof Error ? error.message : 'Codex 双语译配取消失败',
+      );
+      get().applyBilingualLyricsTask(task);
+    }
+  },
+
+  writeBilingualLyricsTag: async () => {
+    const trackId = get().currentTrackId;
+    if (!trackId || get().bilingualLyricsBusy) return null;
+    set({ bilingualLyricsBusy: true });
+    try {
+      const task = await window.lyralume.lyrics.writeBilingualTag(trackId);
+      get().applyBilingualLyricsTask(task);
+      if (task.tagWriteStatus === 'verified' && get().currentTrackId === trackId) {
+        await get().loadLyrics(trackId);
+      }
+      return task;
+    } catch (error) {
+      const task = failedBilingualTask(
+        trackId,
+        get().bilingualLyricsTask,
+        error instanceof Error ? error.message : '双语同步歌词标签写入失败',
+      );
+      get().applyBilingualLyricsTask(task);
+      return task;
+    } finally {
+      if (get().currentTrackId === trackId) set({ bilingualLyricsBusy: false });
     }
   },
 

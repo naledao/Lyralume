@@ -60,6 +60,7 @@
 - Python Worker 测试：pytest。
 - 日志：`electron-log` 或 Pino；日志必须能区分主进程、渲染进程、任务 ID 和 Worker。
 - Windows 打包：electron-builder + NSIS，目标优先为 Win11 x64。
+- 每次生成新的安装包前必须先递增应用版本号，禁止使用同一版本号覆盖已有安装包。未明确指定升级级别时默认递增补丁版本（patch），并同步更新 `package.json`、`pnpm-lock.yaml` 及安装包文件名中的版本号。
 - 持续集成：GitHub Actions，至少执行类型检查、单元测试和 Windows 构建验证。
 - AI 组件和模型应作为可选资源包按需下载，不要塞入核心安装包。
 

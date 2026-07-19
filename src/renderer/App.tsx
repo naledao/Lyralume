@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AudioController } from './audio/AudioController';
+import { persistCurrentPlaybackCheckpoint } from './audio/playbackCheckpoints';
 import { Artwork } from './components/Artwork';
 import { Icon } from './components/Icon';
 import { LibrarySidebar } from './components/LibrarySidebar';
@@ -26,6 +27,7 @@ export function App() {
   const applyLocalLyricsProofreadProgress = useAppStore(
     (state) => state.applyLocalLyricsProofreadProgress,
   );
+  const applyBilingualLyricsTask = useAppStore((state) => state.applyBilingualLyricsTask);
   const chooseDirectory = useAppStore((state) => state.chooseDirectory);
   const importDropped = useAppStore((state) => state.importDropped);
 
@@ -38,15 +40,20 @@ export function App() {
     const offLocalProofread = window.lyralume.lyrics.onLocalProofreadProgress(
       applyLocalLyricsProofreadProgress,
     );
+    const offBilingualTask = window.lyralume.lyrics.onBilingualTaskChanged(
+      applyBilingualLyricsTask,
+    );
     return () => {
       offChanged();
       offProgress();
       offLocalTask();
       offLocalProofread();
+      offBilingualTask();
     };
   }, [
     applyLocalLyricsProofreadProgress,
     applyLocalLyricsTask,
+    applyBilingualLyricsTask,
     applySnapshot,
     initialize,
     setScanProgress,
@@ -77,7 +84,15 @@ export function App() {
     dragDepth.current = 0;
     setDropActive(false);
     const files = Array.from(event.dataTransfer.files);
-    if (files.length > 0) void importDropped(files);
+    if (files.length > 0) void persistCurrentPlaybackCheckpoint()
+      .catch((error) => console.warn('Playback progress could not be saved before import', error))
+      .then(() => importDropped(files));
+  };
+
+  const chooseMusicDirectory = (): void => {
+    void persistCurrentPlaybackCheckpoint()
+      .catch((error) => console.warn('Playback progress could not be saved before import', error))
+      .then(() => chooseDirectory());
   };
 
   return (
@@ -140,7 +155,7 @@ export function App() {
                 <div className="welcome-state__orb"><Icon name="music" /></div>
                 <h2>从你的音乐文件夹开始</h2>
                 <p>歌曲只在本机扫描和播放。Lyralume 不会修改或重新编码原始音频。</p>
-                <button className="button button--primary" type="button" onClick={() => void chooseDirectory()}>
+                <button className="button button--primary" type="button" onClick={chooseMusicDirectory}>
                   <Icon name="add" />选择音乐文件夹
                 </button>
               </div>

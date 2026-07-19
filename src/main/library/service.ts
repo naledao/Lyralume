@@ -1,5 +1,5 @@
 import { stat } from 'node:fs/promises';
-import { basename } from 'node:path';
+import { basename, extname } from 'node:path';
 import { watch, type FSWatcher } from 'chokidar';
 import type {
   LibrarySnapshot,
@@ -8,6 +8,7 @@ import type {
   ScanWarning,
   TrackMetadataUpdate,
 } from '../../shared/contracts.js';
+import { isTrackLanguage } from '../../shared/contracts.js';
 import { logger } from '../logging.js';
 import { TrackWriteCoordinator } from '../track-write-coordinator.js';
 import { LibraryDatabase } from './database.js';
@@ -131,20 +132,33 @@ export class LibraryService {
       const value = metadata[field];
       if (value !== undefined) normalized[field] = cleanMetadataField(value, labels[field]);
     }
+    if (metadata.language !== undefined) {
+      if (metadata.language !== '' && !isTrackLanguage(metadata.language)) {
+        throw new Error('不支持的歌曲语种');
+      }
+      normalized.language = metadata.language;
+    }
     if (Object.keys(normalized).length === 0) throw new Error('没有需要保存的歌曲信息');
     const next = this.scanQueue.then(async () => {
       const track = this.database.getTrackLocation(trackId);
       if (!track) throw new Error('音乐库中找不到这首歌曲');
-      if (!this.metadataWriter) throw new Error('歌曲标签写入功能尚未配置');
-      await this.trackWrites.run(
-        trackId,
-        () => this.metadataWriter!.writeMetadataAndVerify(track.filePath, normalized),
-      );
+      const sourceMetadata: TrackMetadataUpdate = { ...normalized };
+      const writesMp3Language = extname(track.filePath).toLocaleLowerCase() === '.mp3';
+      if (!writesMp3Language) delete sourceMetadata.language;
+      if (Object.keys(sourceMetadata).length > 0) {
+        if (!this.metadataWriter) throw new Error('歌曲标签写入功能尚未配置');
+        await this.trackWrites.run(
+          trackId,
+          () => this.metadataWriter!.writeMetadataAndVerify(track.filePath, sourceMetadata),
+        );
+      }
       if (!this.database.setTrackMetadata(trackId, normalized)) {
         throw new Error('音乐库中找不到这首歌曲');
       }
       logger.info(
-        `[track:${trackId}] Wrote ${Object.keys(normalized).join(', ')} to the source audio file and verified it`,
+        Object.keys(sourceMetadata).length > 0
+          ? `[track:${trackId}] Wrote ${Object.keys(sourceMetadata).join(', ')} to the source audio file and verified it`
+          : `[track:${trackId}] Saved ${Object.keys(normalized).join(', ')} to the local library`,
       );
       return this.refreshSnapshot();
     });

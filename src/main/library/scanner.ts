@@ -3,6 +3,7 @@ import { access, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { parseFile } from 'music-metadata';
 import {
+  normalizeTrackLanguage,
   UNKNOWN_ALBUM,
   UNKNOWN_ARTIST,
   type ScanProgress,
@@ -111,6 +112,7 @@ export async function scanRoot(
         title: metadata.common.title?.trim() || baseName,
         artist: metadata.common.artist?.trim() || UNKNOWN_ARTIST,
         album: metadata.common.album?.trim() || UNKNOWN_ALBUM,
+        language: normalizeTrackLanguage(metadata.common.language),
         duration: Number.isFinite(metadata.format.duration) ? metadata.format.duration ?? 0 : 0,
         fileSize: fileStat.size,
         modifiedAt: fileStat.mtimeMs,

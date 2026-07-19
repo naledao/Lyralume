@@ -28,6 +28,7 @@ function track(rootPath: string, filePath: string, id = '0123456789abcdef0123456
     title: 'Track',
     artist: 'Artist',
     album: 'Album',
+    language: null,
     duration: 30,
     fileSize: 5,
     modifiedAt: 1,
