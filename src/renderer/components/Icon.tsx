@@ -6,6 +6,8 @@ export type IconName =
   | 'back'
   | 'edit'
   | 'forward'
+  | 'fullscreen'
+  | 'fullscreenExit'
   | 'lyrics'
   | 'music'
   | 'pause'
@@ -25,6 +27,8 @@ const paths: Record<IconName, React.ReactNode> = {
   back: <><path d="M6 5v14" /><path d="m18 6-9 6 9 6Z" /></>,
   edit: <><path d="m4 20 4.2-1 10.6-10.6-3.2-3.2L5 15.8Z" /><path d="m13.8 7 3.2 3.2" /></>,
   forward: <><path d="M18 5v14" /><path d="m6 6 9 6-9 6Z" /></>,
+  fullscreen: <><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5" /></>,
+  fullscreenExit: <><path d="M8 3v5H3M16 3v5h5M21 16h-5v5M3 16h5v5" /></>,
   lyrics: <><path d="M5 5h14v11H9l-4 3Z" /><path d="M8 9h8M8 12h5" /></>,
   music: <><path d="M9 18V6l10-2v12" /><circle cx="6" cy="18" r="3" /><circle cx="16" cy="16" r="3" /></>,
   pause: <><path d="M8 6v12M16 6v12" /></>,

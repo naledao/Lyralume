@@ -7,6 +7,8 @@ import type {
   LyralumeApi,
   PlaybackStateSnapshot,
   ScanProgress,
+  TrackVisualAnalysis,
+  VisualAnalysisProgress,
 } from '../shared/contracts.js';
 
 // Keep the sandboxed preload self-contained: sandboxed preloads may only require
@@ -24,6 +26,10 @@ const IPC_CHANNELS = {
   playbackCheckpoint: 'playback:checkpoint',
   playbackFlushRequested: 'playback:flush-requested',
   playbackFlushComplete: 'playback:flush-complete',
+  visualAnalysisGet: 'visual-analysis:get',
+  visualAnalysisRun: 'visual-analysis:run',
+  visualAnalysisChanged: 'visual-analysis:changed',
+  visualAnalysisProgress: 'visual-analysis:progress',
   lyricsLoad: 'lyrics:load',
   lyricsWriteAdjustedTiming: 'lyrics:write-adjusted-timing',
   lyricsOnlineTask: 'lyrics:online-task',
@@ -48,6 +54,8 @@ const IPC_CHANNELS = {
   lyricsBilingualWriteTag: 'lyrics:bilingual-write-tag',
   lyricsBilingualChanged: 'lyrics:bilingual-changed',
   appVersion: 'app:version',
+  appSetFullscreen: 'app:set-fullscreen',
+  appFullscreenChanged: 'app:fullscreen-changed',
 } as const;
 
 const api: LyralumeApi = {
@@ -86,6 +94,30 @@ const api: LyralumeApi = {
       IPC_CHANNELS.playbackCheckpoint,
       checkpoint,
     ),
+  },
+  visuals: {
+    getAnalysis: (trackId) => ipcRenderer.invoke(
+      IPC_CHANNELS.visualAnalysisGet,
+      trackId,
+    ),
+    reanalyze: (trackId) => ipcRenderer.invoke(
+      IPC_CHANNELS.visualAnalysisRun,
+      trackId,
+    ),
+    onAnalysisChanged: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, analysis: TrackVisualAnalysis): void => {
+        callback(analysis);
+      };
+      ipcRenderer.on(IPC_CHANNELS.visualAnalysisChanged, listener);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.visualAnalysisChanged, listener);
+    },
+    onAnalysisProgress: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: VisualAnalysisProgress): void => {
+        callback(progress);
+      };
+      ipcRenderer.on(IPC_CHANNELS.visualAnalysisProgress, listener);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.visualAnalysisProgress, listener);
+    },
   },
   lyrics: {
     load: (trackId) => ipcRenderer.invoke(IPC_CHANNELS.lyricsLoad, trackId),
@@ -183,6 +215,17 @@ const api: LyralumeApi = {
   },
   app: {
     getVersion: () => ipcRenderer.invoke(IPC_CHANNELS.appVersion),
+    setFullscreen: (fullscreen) => ipcRenderer.invoke(
+      IPC_CHANNELS.appSetFullscreen,
+      fullscreen,
+    ),
+    onFullscreenChanged: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, fullscreen: boolean): void => {
+        callback(fullscreen);
+      };
+      ipcRenderer.on(IPC_CHANNELS.appFullscreenChanged, listener);
+      return () => ipcRenderer.removeListener(IPC_CHANNELS.appFullscreenChanged, listener);
+    },
     onPlaybackFlushRequested: (callback) => {
       const listener = (_event: Electron.IpcRendererEvent, requestId: string): void => {
         callback(requestId);

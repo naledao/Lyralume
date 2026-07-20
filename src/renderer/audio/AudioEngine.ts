@@ -130,15 +130,23 @@ class AudioEngine {
     return this.analyser;
   }
 
+  getSourceGeneration(): number {
+    return this.loadGeneration;
+  }
+
   private async ensureGraph(): Promise<void> {
     if (!this.context) {
       this.context = new AudioContext();
       this.source = this.context.createMediaElementSource(this.audio);
       this.analyser = this.context.createAnalyser();
-      this.analyser.fftSize = 512;
-      this.analyser.smoothingTimeConstant = 0.82;
+      this.analyser.fftSize = 2_048;
+      this.analyser.smoothingTimeConstant = 0.45;
+      this.analyser.minDecibels = -96;
+      this.analyser.maxDecibels = -12;
+      // Playback has its own direct path. The analyser is a passive tap so visual
+      // lifecycle failures or disabled visual rendering can never mute audio.
+      this.source.connect(this.context.destination);
       this.source.connect(this.analyser);
-      this.analyser.connect(this.context.destination);
     }
     if (this.context.state === 'suspended') await this.context.resume();
   }

@@ -32,6 +32,12 @@ const api = {
     getState: vi.fn(),
     saveCheckpoint: vi.fn(),
   },
+  visuals: {
+    getAnalysis: vi.fn(),
+    reanalyze: vi.fn(),
+    onAnalysisChanged: vi.fn(() => () => undefined),
+    onAnalysisProgress: vi.fn(() => () => undefined),
+  },
   lyrics: {
     load: vi.fn(),
     writeAdjustedTiming: vi.fn(),
@@ -59,6 +65,8 @@ const api = {
   },
   app: {
     getVersion: vi.fn(),
+    setFullscreen: vi.fn(),
+    onFullscreenChanged: vi.fn(() => () => undefined),
     onPlaybackFlushRequested: vi.fn(() => () => undefined),
     completePlaybackFlush: vi.fn(),
   },
@@ -66,6 +74,7 @@ const api = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
   window.lyralume = api;
   api.playback.getState.mockResolvedValue({ lastTrackId: null, progress: [] });
   api.playback.saveCheckpoint.mockImplementation(async (checkpoint) => ({
@@ -109,6 +118,10 @@ beforeEach(() => {
     scanning: false,
     scanProgress: null,
     libraryMessage: null,
+    visualsEnabled: true,
+    visualQuality: 'balanced',
+    visualIntensity: 1,
+    visualReducedMotion: false,
   });
   api.lyrics.getOnlineTask.mockResolvedValue({
     id: 'online-test',
@@ -138,6 +151,20 @@ beforeEach(() => {
 });
 
 describe('player store', () => {
+  it('persists bounded visual accessibility and quality settings', () => {
+    useAppStore.getState().setVisualQuality('high');
+    useAppStore.getState().setVisualIntensity(9);
+    useAppStore.getState().setVisualReducedMotion(true);
+
+    expect(useAppStore.getState()).toMatchObject({
+      visualQuality: 'high',
+      visualIntensity: 1.35,
+      visualReducedMotion: true,
+    });
+    expect(JSON.parse(window.localStorage.getItem('lyralume.visual-settings.v1') ?? '{}'))
+      .toEqual({ quality: 'high', intensity: 1.35, reducedMotion: true });
+  });
+
   it('resumes a selected track from its persisted playback position', () => {
     const item = track('101111111111111111111111', 'Resume');
     useAppStore.getState().applySnapshot({ tracks: [item], roots: [] });
@@ -310,11 +337,20 @@ describe('player store', () => {
       raw: '[offset:100]\n[00:01.00]Hello',
       source: 'lrc',
       revision: 'a'.repeat(64),
+      preciseTiming: [{
+        time: 1,
+        endTime: 2,
+        text: 'Hello',
+        tokens: [{ text: 'Hello', startTime: 1, endTime: 2 }],
+      }],
     });
     useAppStore.getState().applySnapshot({ tracks: [item], roots: [] });
     useAppStore.getState().selectTrack(item.id);
     await vi.waitFor(() => expect(useAppStore.getState().lyricsStatus).toBe('loaded'));
     expect(useAppStore.getState().lyricLines[0].text).toBe('Hello');
+    expect(useAppStore.getState().lyricLines[0].tokens).toEqual([
+      { text: 'Hello', startTime: 1, endTime: 2 },
+    ]);
     expect(useAppStore.getState().lyricOffsetMs).toBe(100);
     expect(useAppStore.getState()).toMatchObject({
       lyricsSource: 'lrc',

@@ -1,6 +1,6 @@
 {
   "name": "lyralume",
-  "version": "0.1.2",
+  "version": "0.1.8",
   "private": true,
   "description": "Win11 local music player with synchronized lyrics and audio-reactive visuals",
   "type": "module",
@@ -29,6 +29,7 @@
     "better-sqlite3": "12.11.1",
     "chokidar": "5.0.0",
     "electron-log": "5.4.4",
+    "fft.js": "4.0.4",
     "gsap": "3.15.0",
     "music-metadata": "11.14.0",
     "react": "19.2.7",
@@ -77,6 +78,15 @@
           "**/*",
           "!**/__pycache__/**",
           "!**/*.pyc"
+        ]
+      },
+      {
+        "from": "tools/ffmpeg",
+        "to": "tools/ffmpeg",
+        "filter": [
+          "README.md",
+          "ffmpeg.exe",
+          "LICENSE*"
         ]
       }
     ],

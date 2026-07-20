@@ -19,9 +19,57 @@ import type {
   TrackMetadataUpdate,
 } from '../../shared/contracts';
 import { getTrackLanguageLabel } from '../../shared/contracts';
-import { parseLrc, type LyricLine } from '../../shared/lrc';
+import { mergePreciseLyricTiming, parseLrc, type LyricLine } from '../../shared/lrc';
 
 export type PlaybackMode = 'sequence' | 'shuffle' | 'repeat-one';
+export type VisualQuality = 'eco' | 'balanced' | 'high';
+
+interface VisualSettings {
+  quality: VisualQuality;
+  intensity: number;
+  reducedMotion: boolean;
+}
+
+const VISUAL_SETTINGS_STORAGE_KEY = 'lyralume.visual-settings.v1';
+
+function defaultReducedMotion(): boolean {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function readVisualSettings(): VisualSettings {
+  const fallback: VisualSettings = {
+    quality: 'balanced',
+    intensity: 1,
+    reducedMotion: defaultReducedMotion(),
+  };
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(VISUAL_SETTINGS_STORAGE_KEY) ?? '{}') as Partial<VisualSettings>;
+    return {
+      quality: parsed.quality === 'eco' || parsed.quality === 'high' ? parsed.quality : 'balanced',
+      intensity: typeof parsed.intensity === 'number'
+        ? Math.min(1.35, Math.max(0.35, parsed.intensity))
+        : fallback.intensity,
+      reducedMotion: typeof parsed.reducedMotion === 'boolean'
+        ? parsed.reducedMotion
+        : fallback.reducedMotion,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function persistVisualSettings(settings: VisualSettings): void {
+  try {
+    window.localStorage.setItem(VISUAL_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch {
+    // Settings remain active for the current session if browser storage is unavailable.
+  }
+}
+
+const initialVisualSettings = readVisualSettings();
 
 const PLAYBACK_MODES: PlaybackMode[] = ['sequence', 'shuffle', 'repeat-one'];
 
@@ -88,6 +136,9 @@ interface AppState {
   bilingualLyricsTasks: Record<string, BilingualLyricsTask>;
   bilingualLyricsBusy: boolean;
   visualsEnabled: boolean;
+  visualQuality: VisualQuality;
+  visualIntensity: number;
+  visualReducedMotion: boolean;
   initialize(): Promise<void>;
   applySnapshot(snapshot: LibrarySnapshot): void;
   applyPlaybackState(snapshot: PlaybackStateSnapshot): void;
@@ -141,6 +192,9 @@ interface AppState {
   adjustLyricOffset(deltaMs: number): void;
   resetLyricOffset(): void;
   toggleVisuals(): void;
+  setVisualQuality(quality: VisualQuality): void;
+  setVisualIntensity(intensity: number): void;
+  setVisualReducedMotion(reducedMotion: boolean): void;
 }
 
 function normalizedQueue(snapshot: LibrarySnapshot, currentQueue: string[]): string[] {
@@ -288,6 +342,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   bilingualLyricsTasks: {},
   bilingualLyricsBusy: false,
   visualsEnabled: true,
+  visualQuality: initialVisualSettings.quality,
+  visualIntensity: initialVisualSettings.intensity,
+  visualReducedMotion: initialVisualSettings.reducedMotion,
 
   initialize: async () => {
     set({ libraryLoading: true, libraryMessage: null });
@@ -643,6 +700,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         return;
       }
       const parsed = parseLrc(document.raw);
+      const lyricLines = mergePreciseLyricTiming(parsed.lines, document.preciseTiming);
       if (parsed.lines.length === 0) {
         set({
           lyricsStatus: 'error',
@@ -656,7 +714,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       set({
         lyricsStatus: 'loaded',
-        lyricLines: parsed.lines,
+        lyricLines,
         lyricOffsetMs: parsed.sourceOffsetMs,
         lyricsSource: document.source ?? null,
         lyricsRevision: document.revision ?? null,
@@ -1160,6 +1218,31 @@ export const useAppStore = create<AppState>((set, get) => ({
     lyricTimingWriteMessage: null,
   }),
   toggleVisuals: () => set((state) => ({ visualsEnabled: !state.visualsEnabled })),
+  setVisualQuality: (quality) => set((state) => {
+    persistVisualSettings({
+      quality,
+      intensity: state.visualIntensity,
+      reducedMotion: state.visualReducedMotion,
+    });
+    return { visualQuality: quality };
+  }),
+  setVisualIntensity: (intensity) => set((state) => {
+    const normalized = Math.min(1.35, Math.max(0.35, intensity));
+    persistVisualSettings({
+      quality: state.visualQuality,
+      intensity: normalized,
+      reducedMotion: state.visualReducedMotion,
+    });
+    return { visualIntensity: normalized };
+  }),
+  setVisualReducedMotion: (reducedMotion) => set((state) => {
+    persistVisualSettings({
+      quality: state.visualQuality,
+      intensity: state.visualIntensity,
+      reducedMotion,
+    });
+    return { visualReducedMotion: reducedMotion };
+  }),
 }));
 
 export function currentTrackFromState(state: Pick<AppState, 'tracks' | 'currentTrackId'>): Track | null {

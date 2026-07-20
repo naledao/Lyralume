@@ -26,7 +26,10 @@ export interface StoredTrackLocation {
   title: string;
   artist: string;
   album: string;
+  language: TrackLanguage | null;
   duration: number;
+  fileSize: number;
+  modifiedAt: number;
 }
 
 export interface StoredArtwork {

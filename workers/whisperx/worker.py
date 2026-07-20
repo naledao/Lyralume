@@ -12,6 +12,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from chinese_text import transcript_segments_to_simplified
+
 PROTOCOL_VERSION = 1
 if hasattr(sys.stdin, "reconfigure"):
     sys.stdin.reconfigure(encoding="utf-8", errors="strict")
@@ -118,17 +120,22 @@ def run(request: dict[str, Any]) -> None:
         detected_language = transcript.get("language") or language
         if not isinstance(detected_language, str) or not detected_language:
             raise RuntimeError("WhisperX did not detect a language")
+        segments_for_alignment = transcript["segments"]
+        alignment_message = "原始转写已保存，正在加载对齐模型"
+        if detected_language == "zh":
+            segments_for_alignment = transcript_segments_to_simplified(segments_for_alignment)
+            alignment_message = "原始转写已保存并转换为简体，正在加载对齐模型"
 
         del model
         release_gpu(torch)
-        emit("progress", task_id, "alignment", progress=0.62, message="原始转写已保存，正在加载对齐模型")
+        emit("progress", task_id, "alignment", progress=0.62, message=alignment_message)
         align_model, metadata = whisperx.load_align_model(
             language_code=detected_language,
             device=device,
             model_dir=str(model_directory),
         )
         aligned = whisperx.align(
-            transcript["segments"],
+            segments_for_alignment,
             align_model,
             metadata,
             audio,

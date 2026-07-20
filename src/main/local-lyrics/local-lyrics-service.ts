@@ -13,6 +13,10 @@ import type {
   LocalLyricsTask,
   LocalLyricsTaskError,
 } from '../../shared/contracts.js';
+import {
+  normalizeTrackLanguage,
+  toWhisperLanguageCode,
+} from '../../shared/track-language.js';
 import { LibraryDatabase } from '../library/database.js';
 import { LibraryService } from '../library/service.js';
 import { logger } from '../logging.js';
@@ -205,7 +209,10 @@ export class LocalLyricsService {
         error: taskError('task_in_progress', '这首歌曲已有本地歌词任务正在运行', current.stage),
       };
     }
-    const language = options.language?.trim();
+    const requestedLanguage = options.language?.trim();
+    const language = requestedLanguage
+      ? toWhisperLanguageCode(normalizeTrackLanguage(requestedLanguage)) ?? requestedLanguage
+      : toWhisperLanguageCode(track.language);
     if (language && !/^[a-z]{2,3}(?:-[A-Z]{2})?$/.test(language)) {
       return {
         ...idleTask(trackId),
@@ -319,6 +326,7 @@ export class LocalLyricsService {
             ...line,
             confidence: original?.confidence ?? null,
             flags: original ? [...original.flags] : ['low_confidence' as const],
+            ...(original?.tokens ? { tokens: original.tokens.map((token) => ({ ...token })) } : {}),
           };
         }),
       });

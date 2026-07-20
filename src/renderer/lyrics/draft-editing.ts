@@ -29,12 +29,13 @@ export function splitDraftLine(
   const middleTime = line.startTime + (line.endTime - line.startTime) * (point / line.text.length);
   return [
     ...lines.slice(0, index),
-    { ...line, text: firstText, endTime: middleTime },
+    { ...line, text: firstText, endTime: middleTime, tokens: undefined },
     {
       ...line,
       id: uniqueId(lines, line.id),
       text: secondText,
       startTime: middleTime,
+      tokens: undefined,
     },
     ...lines.slice(index + 1),
   ];
@@ -60,6 +61,7 @@ export function mergeDraftLineWithPrevious(
       ? scores.reduce((sum, score) => sum + score, 0) / scores.length
       : null,
     flags: [...new Set([...previous.flags, ...current.flags])],
+    tokens: undefined,
   };
   return [...lines.slice(0, index - 1), merged, ...lines.slice(index + 1)];
 }
@@ -74,6 +76,15 @@ export function updateDraftLineTime(
     ...line,
     startTime: nextStart,
     endTime: nextStart + duration,
+    ...(line.tokens
+      ? {
+          tokens: line.tokens.map((token) => ({
+            ...token,
+            startTime: token.startTime + nextStart - line.startTime,
+            endTime: token.endTime + nextStart - line.startTime,
+          })),
+        }
+      : {}),
     flags: line.flags.filter((flag) => flag !== 'missing_timing'),
   };
 }

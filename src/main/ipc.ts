@@ -15,9 +15,12 @@ import { LibraryService } from './library/service.js';
 import { BilingualLyricsService } from './lyrics/bilingual-lyrics-service.js';
 import { LyricsOffsetService } from './lyrics/lyrics-offset-service.js';
 import { loadPreferredLyricsSource } from './lyrics/lyrics-source.js';
+import { preciseTimingForLocalTask } from './lyrics/precise-timing.js';
 import { OnlineLyricsService } from './lyrics/online-lyrics-service.js';
 import { LocalLyricsService } from './local-lyrics/local-lyrics-service.js';
 import { logger } from './logging.js';
+import { setImmersiveFullscreen } from './immersive-fullscreen.js';
+import { VisualAnalysisService } from './visual-analysis/service.js';
 
 const TRACK_ID_PATTERN = /^[a-f0-9]{24}$/;
 const PLAYBACK_CHECKPOINT_REASONS = new Set<PlaybackCheckpoint['reason']>([
@@ -40,9 +43,13 @@ export function registerIpcHandlers(
   localLyrics: LocalLyricsService,
   bilingualLyrics: BilingualLyricsService,
   lyricsOffset: LyricsOffsetService,
+  visualAnalysis: VisualAnalysisService,
 ): void {
   library.setListeners(
-    (snapshot) => getWindow()?.webContents.send(IPC_CHANNELS.libraryChanged, snapshot),
+    (snapshot) => {
+      getWindow()?.webContents.send(IPC_CHANNELS.libraryChanged, snapshot);
+      visualAnalysis.scheduleLibrary(snapshot.tracks);
+    },
     (progress) => getWindow()?.webContents.send(IPC_CHANNELS.libraryScanProgress, progress),
   );
   localLyrics.setListener((task) => {
@@ -51,6 +58,10 @@ export function registerIpcHandlers(
   bilingualLyrics.setListener((task) => {
     getWindow()?.webContents.send(IPC_CHANNELS.lyricsBilingualChanged, task);
   });
+  visualAnalysis.setListeners(
+    (analysis) => getWindow()?.webContents.send(IPC_CHANNELS.visualAnalysisChanged, analysis),
+    (progress) => getWindow()?.webContents.send(IPC_CHANNELS.visualAnalysisProgress, progress),
+  );
 
   ipcMain.handle(IPC_CHANNELS.librarySnapshot, () => library.getSnapshot());
 
@@ -62,6 +73,20 @@ export function registerIpcHandlers(
       throw new Error('音乐库中找不到这首歌曲');
     }
     return database.savePlaybackCheckpoint(checkpoint);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.visualAnalysisGet, (_event, trackId: unknown) => {
+    if (typeof trackId !== 'string' || !TRACK_ID_PATTERN.test(trackId)) {
+      throw new Error('无效的歌曲 ID');
+    }
+    return visualAnalysis.get(trackId);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.visualAnalysisRun, (_event, trackId: unknown) => {
+    if (typeof trackId !== 'string' || !TRACK_ID_PATTERN.test(trackId)) {
+      throw new Error('无效的歌曲 ID');
+    }
+    return visualAnalysis.reanalyze(trackId);
   });
 
   ipcMain.handle(IPC_CHANNELS.libraryChooseDirectory, async () => {
@@ -134,7 +159,13 @@ export function registerIpcHandlers(
     const track = database.getTrackLocation(trackId);
     if (!track) return { status: 'missing' };
     const source = await loadPreferredLyricsSource(track);
-    if (source) return { status: 'loaded', ...source };
+    if (source) {
+      const preciseTiming = preciseTimingForLocalTask(
+        database.getLocalLyricsTask(trackId),
+        source.source,
+      );
+      return { status: 'loaded', ...source, ...(preciseTiming ? { preciseTiming } : {}) };
+    }
     return track.lrcPath
       ? { status: 'error', message: '歌词文件无法读取或已被移动' }
       : { status: 'missing' };
@@ -306,6 +337,17 @@ export function registerIpcHandlers(
   });
 
   ipcMain.handle(IPC_CHANNELS.appVersion, () => app.getVersion());
+
+  ipcMain.handle(IPC_CHANNELS.appSetFullscreen, (event, fullscreen: unknown) => {
+    if (typeof fullscreen !== 'boolean') {
+      throw new Error('无效的全屏状态');
+    }
+    const window = getWindow();
+    if (!window || window.isDestroyed() || window.webContents !== event.sender) {
+      throw new Error('播放器窗口不可用');
+    }
+    return setImmersiveFullscreen(window, fullscreen);
+  });
 }
 
 export function removeIpcHandlers(): void {
@@ -318,6 +360,8 @@ export function removeIpcHandlers(): void {
     IPC_CHANNELS.libraryRemoveTrack,
     IPC_CHANNELS.playbackState,
     IPC_CHANNELS.playbackCheckpoint,
+    IPC_CHANNELS.visualAnalysisGet,
+    IPC_CHANNELS.visualAnalysisRun,
     IPC_CHANNELS.lyricsLoad,
     IPC_CHANNELS.lyricsWriteAdjustedTiming,
     IPC_CHANNELS.lyricsOnlineTask,
@@ -339,6 +383,7 @@ export function removeIpcHandlers(): void {
     IPC_CHANNELS.lyricsBilingualCancel,
     IPC_CHANNELS.lyricsBilingualWriteTag,
     IPC_CHANNELS.appVersion,
+    IPC_CHANNELS.appSetFullscreen,
   ]) {
     ipcMain.removeHandler(channel);
   }

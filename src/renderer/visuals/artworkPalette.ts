@@ -12,6 +12,16 @@ export interface VisualizerPalette {
   glowColors: RgbColor[];
 }
 
+export interface ImmersiveTheme {
+  background: RgbColor;
+  backgroundAlt: RgbColor;
+  accent: RgbColor;
+  accentSecondary: RgbColor;
+  activeText: RgbColor;
+  translationText: RgbColor;
+  mutedText: RgbColor;
+}
+
 interface ColorBucket {
   red: number;
   green: number;
@@ -186,6 +196,43 @@ function visibleOnDarkBackground(color: RgbColor): RgbColor {
   return hslToRgb(hsl);
 }
 
+function linearizeChannel(channel: number): number {
+  const normalized = channel / 255;
+  return normalized <= 0.04045
+    ? normalized / 12.92
+    : ((normalized + 0.055) / 1.055) ** 2.4;
+}
+
+function relativeLuminance(color: RgbColor): number {
+  return linearizeChannel(color[0]) * 0.2126
+    + linearizeChannel(color[1]) * 0.7152
+    + linearizeChannel(color[2]) * 0.0722;
+}
+
+export function contrastRatio(left: RgbColor, right: RgbColor): number {
+  const brighter = Math.max(relativeLuminance(left), relativeLuminance(right));
+  const darker = Math.min(relativeLuminance(left), relativeLuminance(right));
+  return (brighter + 0.05) / (darker + 0.05);
+}
+
+function ensureContrast(
+  color: RgbColor,
+  background: RgbColor,
+  targetRatio: number,
+): RgbColor {
+  if (contrastRatio(color, background) >= targetRatio) return color;
+  const white: RgbColor = [255, 255, 255];
+  const black: RgbColor = [0, 0, 0];
+  const destination = contrastRatio(white, background) >= contrastRatio(black, background)
+    ? white
+    : black;
+  for (let step = 1; step <= 20; step += 1) {
+    const candidate = mixColor(color, destination, step / 20);
+    if (contrastRatio(candidate, background) >= targetRatio) return candidate;
+  }
+  return destination;
+}
+
 function allocateColors(palette: ArtworkPalette, count: number): number[] {
   const usable = palette.slice(0, count);
   const allocations = usable.map(() => 1);
@@ -245,6 +292,43 @@ function mixColor(from: RgbColor, to: RgbColor, progress: number): RgbColor {
     Math.round(from[1] + (to[1] - from[1]) * progress),
     Math.round(from[2] + (to[2] - from[2]) * progress),
   ];
+}
+
+export function createImmersiveTheme(palette: ArtworkPalette): ImmersiveTheme {
+  const source = palette.length > 0 ? palette : DEFAULT_ARTWORK_PALETTE;
+  const dominant = source[0]?.color ?? DEFAULT_ARTWORK_PALETTE[0].color;
+  const rankedAccents = [...source].sort((left, right) => {
+    const leftHsl = rgbToHsl(left.color);
+    const rightHsl = rgbToHsl(right.color);
+    const leftScore = leftHsl.saturation * 0.72 + left.weight * 0.28;
+    const rightScore = rightHsl.saturation * 0.72 + right.weight * 0.28;
+    return rightScore - leftScore;
+  });
+  const primarySource = rankedAccents[0]?.color ?? DEFAULT_ARTWORK_PALETTE[0].color;
+  const secondarySource = rankedAccents[1]?.color
+    ?? DEFAULT_ARTWORK_PALETTE[1].color
+    ?? primarySource;
+  const background = mixColor(dominant, [4, 7, 13], 0.86);
+  const backgroundAlt = mixColor(secondarySource, [7, 10, 18], 0.9);
+  const accent = ensureContrast(visibleOnDarkBackground(primarySource), background, 4.5);
+  const accentSecondary = ensureContrast(
+    visibleOnDarkBackground(secondarySource),
+    background,
+    4.5,
+  );
+  return {
+    background,
+    backgroundAlt,
+    accent,
+    accentSecondary,
+    activeText: ensureContrast(mixColor(accent, [255, 255, 255], 0.4), background, 4.5),
+    translationText: ensureContrast(
+      mixColor(accentSecondary, [255, 255, 255], 0.24),
+      background,
+      4.5,
+    ),
+    mutedText: ensureContrast(mixColor(background, [255, 255, 255], 0.5), background, 4.5),
+  };
 }
 
 export function interpolateVisualizerPalette(

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  contrastRatio,
+  createImmersiveTheme,
   createVisualizerPalette,
   extractArtworkPalette,
   type ArtworkPalette,
@@ -70,5 +72,29 @@ describe('visualizer palette distribution', () => {
     expect(visualizerPalette.barColors).toHaveLength(72);
     expect(distinctColors.size).toBe(4);
     expect(visualizerPalette.glowColors).toHaveLength(6);
+  });
+});
+
+describe('immersive theme', () => {
+  it('keeps artwork-derived lyric colors readable on the generated dark background', () => {
+    const theme = createImmersiveTheme([
+      { color: [16, 19, 24], weight: 0.72 },
+      { color: [185, 54, 38], weight: 0.18 },
+      { color: [38, 74, 192], weight: 0.1 },
+    ]);
+
+    expect(contrastRatio(theme.accent, theme.background)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(theme.accentSecondary, theme.background)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(theme.activeText, theme.background)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(theme.translationText, theme.background)).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(theme.mutedText, theme.background)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('falls back to the Lyralume palette when artwork colors are unavailable', () => {
+    const theme = createImmersiveTheme([]);
+
+    expect(theme.background).toHaveLength(3);
+    expect(theme.accent).toHaveLength(3);
+    expect(contrastRatio(theme.activeText, theme.background)).toBeGreaterThanOrEqual(4.5);
   });
 });

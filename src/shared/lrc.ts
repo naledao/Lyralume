@@ -2,6 +2,22 @@ export interface LyricLine {
   id: string;
   time: number;
   text: string;
+  endTime?: number;
+  tokens?: TimedLyricToken[];
+}
+
+export interface TimedLyricToken {
+  text: string;
+  startTime: number;
+  endTime: number;
+  confidence?: number;
+}
+
+export interface PreciseLyricLineTiming {
+  time: number;
+  endTime: number;
+  text: string;
+  tokens: TimedLyricToken[];
 }
 
 export type LyricCueLineRole = 'original' | 'translation' | 'additional';
@@ -23,6 +39,7 @@ export interface ParsedLyrics {
 }
 
 const TIMESTAMP = /\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
+const ENHANCED_TIMESTAMP = /<(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?>/g;
 const METADATA = /^\[([a-zA-Z]+):([^\]]*)\]$/;
 
 function fractionToSeconds(raw = '0'): number {
@@ -31,9 +48,52 @@ function fractionToSeconds(raw = '0'): number {
   return Number(raw.slice(0, 3)) / 1000;
 }
 
+function timestampToSeconds(match: RegExpMatchArray): number | undefined {
+  const minutes = Number(match[1]);
+  const seconds = Number(match[2]);
+  const fraction = fractionToSeconds(match[3]);
+  if (!Number.isFinite(minutes) || seconds >= 60) return undefined;
+  return minutes * 60 + seconds + fraction;
+}
+
+function normalizedLyricText(text: string): string {
+  return text.normalize('NFKC').replace(/\s+/g, ' ').trim();
+}
+
+export function timedTokensMatchText(
+  tokens: ReadonlyArray<Pick<TimedLyricToken, 'text'>>,
+  text: string,
+): boolean {
+  return tokens.length > 0
+    && normalizedLyricText(tokens.map((token) => token.text).join('')) === normalizedLyricText(text);
+}
+
+interface ParsedEnhancedToken {
+  text: string;
+  startTime: number;
+}
+
+function parseEnhancedTokens(rawText: string): ParsedEnhancedToken[] {
+  ENHANCED_TIMESTAMP.lastIndex = 0;
+  const stamps = [...rawText.matchAll(ENHANCED_TIMESTAMP)];
+  if (stamps.length === 0) return [];
+  const prefix = rawText.slice(0, stamps[0].index).trim();
+  if (prefix) return [];
+
+  const tokens = stamps.flatMap((stamp, index): ParsedEnhancedToken[] => {
+    const startTime = timestampToSeconds(stamp);
+    const textStart = (stamp.index ?? 0) + stamp[0].length;
+    const textEnd = stamps[index + 1]?.index ?? rawText.length;
+    const text = rawText.slice(textStart, textEnd);
+    return startTime === undefined || !text.trim() ? [] : [{ text, startTime }];
+  });
+  const visibleText = rawText.replace(ENHANCED_TIMESTAMP, '').trim();
+  return timedTokensMatchText(tokens, visibleText) ? tokens : [];
+}
+
 export function parseLrc(raw: string): ParsedLyrics {
   const metadata: Record<string, string> = {};
-  const parsed: Array<Omit<LyricLine, 'id'>> = [];
+  const parsed: Array<Omit<LyricLine, 'id' | 'tokens'> & { enhancedTokens?: ParsedEnhancedToken[] }> = [];
 
   for (const originalLine of raw.replace(/^\uFEFF/, '').split(/\r?\n/)) {
     const line = originalLine.trim();
@@ -47,21 +107,39 @@ export function parseLrc(raw: string): ParsedLyrics {
       continue;
     }
 
-    const text = line.replace(TIMESTAMP, '').trim();
+    const stampedText = line.replace(TIMESTAMP, '').trim();
+    const text = stampedText.replace(ENHANCED_TIMESTAMP, '').trim();
+    const enhancedTokens = stamps.length === 1 ? parseEnhancedTokens(stampedText) : [];
     for (const stamp of stamps) {
-      const minutes = Number(stamp[1]);
-      const seconds = Number(stamp[2]);
-      const fraction = fractionToSeconds(stamp[3]);
-      if (!Number.isFinite(minutes) || seconds >= 60) continue;
-      parsed.push({ time: minutes * 60 + seconds + fraction, text });
+      const time = timestampToSeconds(stamp);
+      if (time === undefined) continue;
+      parsed.push({ time, text, enhancedTokens });
     }
   }
 
   parsed.sort((a, b) => a.time - b.time);
-  const lines = parsed.map((line, index) => ({
-    ...line,
-    id: `${line.time.toFixed(3)}-${index}`,
-  }));
+  const lines = parsed.map((line, index): LyricLine => {
+    const { enhancedTokens, ...plainLine } = line;
+    if (!enhancedTokens?.length) {
+      return { ...plainLine, id: `${line.time.toFixed(3)}-${index}` };
+    }
+    const nextLineTime = parsed.find((candidate) => candidate.time > line.time)?.time;
+    const tokens = enhancedTokens.map((token, tokenIndex): TimedLyricToken => ({
+      ...token,
+      endTime: Math.max(
+        token.startTime,
+        enhancedTokens[tokenIndex + 1]?.startTime
+          ?? nextLineTime
+          ?? token.startTime + Math.max(0.18, token.text.trim().length * 0.12),
+      ),
+    }));
+    return {
+      ...plainLine,
+      id: `${line.time.toFixed(3)}-${index}`,
+      endTime: tokens.at(-1)?.endTime,
+      tokens,
+    };
+  });
 
   const sourceOffsetMs = Number.parseInt(metadata.offset ?? '0', 10);
   return {
@@ -69,6 +147,35 @@ export function parseLrc(raw: string): ParsedLyrics {
     metadata,
     sourceOffsetMs: Number.isFinite(sourceOffsetMs) ? sourceOffsetMs : 0,
   };
+}
+
+/**
+ * Adds optional word/character timing only when it still describes the loaded
+ * lyric row exactly. Edited or shifted LRC files therefore fall back safely to
+ * line-level progress instead of showing stale token timing.
+ */
+export function mergePreciseLyricTiming(
+  lines: LyricLine[],
+  preciseTiming: readonly PreciseLyricLineTiming[] | undefined,
+): LyricLine[] {
+  if (!preciseTiming?.length) return lines;
+  const unused = new Set(preciseTiming.map((_, index) => index));
+  return lines.map((line) => {
+    const timingIndex = preciseTiming.findIndex((candidate, index) => (
+      unused.has(index)
+      && Math.abs(candidate.time - line.time) <= 0.035
+      && normalizedLyricText(candidate.text) === normalizedLyricText(line.text)
+      && timedTokensMatchText(candidate.tokens, line.text)
+    ));
+    if (timingIndex < 0) return line;
+    const timing = preciseTiming[timingIndex];
+    unused.delete(timingIndex);
+    return {
+      ...line,
+      endTime: timing.endTime,
+      tokens: timing.tokens.map((token) => ({ ...token })),
+    };
+  });
 }
 
 const HAN_SCRIPT = /\p{Script=Han}/u;

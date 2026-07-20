@@ -1,4 +1,5 @@
 import type { LocalLyricsDraftLine, LocalLyricsDraftUpdate, LocalLyricsLineFlag } from '../../shared/contracts.js';
+import { timedTokensMatchText, type TimedLyricToken } from '../../shared/lrc.js';
 
 interface AlignmentToken {
   text: string;
@@ -112,6 +113,7 @@ export function compileAlignmentToDraft(raw: unknown): LocalLyricsDraftLine[] {
     let end: number | undefined;
     let missingTiming = false;
     const scores: number[] = [];
+    const timedTokens: TimedLyricToken[] = [];
 
     const flush = (): void => {
       const cleaned = text.trim();
@@ -129,6 +131,9 @@ export function compileAlignmentToDraft(raw: unknown): LocalLyricsDraftLine[] {
         text: cleaned,
         confidence,
         flags,
+        ...(!missingTiming && timedTokensMatchText(timedTokens, cleaned)
+          ? { tokens: timedTokens.map((token) => ({ ...token })) }
+          : {}),
       });
       previousEnd = endTime;
       text = '';
@@ -136,6 +141,7 @@ export function compileAlignmentToDraft(raw: unknown): LocalLyricsDraftLine[] {
       end = undefined;
       missingTiming = false;
       scores.length = 0;
+      timedTokens.length = 0;
     };
 
     for (const token of segment.tokens) {
@@ -152,10 +158,20 @@ export function compileAlignmentToDraft(raw: unknown): LocalLyricsDraftLine[] {
         || prospectiveDuration > MAX_LINE_DURATION
       )) flush();
 
+      const previousText = text;
       text = appendText(text, token.text);
+      const displayedTokenText = text.slice(previousText.length);
       start ??= token.start;
       end = token.end ?? end;
       if (token.start === undefined || token.end === undefined) missingTiming = true;
+      else {
+        timedTokens.push({
+          text: displayedTokenText,
+          startTime: token.start,
+          endTime: Math.max(token.start, token.end),
+          ...(token.score === undefined ? {} : { confidence: token.score }),
+        });
+      }
       if (token.score !== undefined) scores.push(token.score);
       if (endsPhrase(text)) flush();
     }
@@ -171,6 +187,45 @@ function cleanFlags(flags: unknown): LocalLyricsLineFlag[] {
   return [...new Set(flags.filter((flag): flag is LocalLyricsLineFlag => (
     flag === 'low_confidence' || flag === 'missing_timing'
   )))];
+}
+
+function cleanTimedTokens(
+  value: unknown,
+  text: string,
+  startTime: number,
+  endTime: number,
+): TimedLyricToken[] | undefined {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 1_000) return undefined;
+  let previousEnd = startTime;
+  const tokens: TimedLyricToken[] = [];
+  for (const token of value) {
+    if (!isRecord(token)) return undefined;
+    const tokenText = typeof token.text === 'string'
+      ? token.text.replace(/[\r\n\0]+/g, ' ')
+      : '';
+    const tokenStart = finiteNumber(token.startTime);
+    const tokenEnd = finiteNumber(token.endTime);
+    if (
+      !tokenText.trim()
+      || tokenStart === undefined
+      || tokenEnd === undefined
+      || tokenEnd < tokenStart
+      || tokenStart < startTime - 0.05
+      || tokenEnd > endTime + 0.05
+      || tokenStart < previousEnd - 0.05
+    ) return undefined;
+    const confidence = typeof token.confidence === 'number' && Number.isFinite(token.confidence)
+      ? Math.min(1, Math.max(0, token.confidence))
+      : undefined;
+    tokens.push({
+      text: tokenText,
+      startTime: tokenStart,
+      endTime: tokenEnd,
+      ...(confidence === undefined ? {} : { confidence }),
+    });
+    previousEnd = tokenEnd;
+  }
+  return timedTokensMatchText(tokens, text) ? tokens : undefined;
 }
 
 export function validateDraftUpdate(update: LocalLyricsDraftUpdate): LocalLyricsDraftUpdate {
@@ -205,6 +260,7 @@ export function validateDraftUpdate(update: LocalLyricsDraftUpdate): LocalLyrics
       : typeof line.confidence === 'number' && Number.isFinite(line.confidence)
         ? Math.min(1, Math.max(0, line.confidence))
         : null;
+    const tokens = cleanTimedTokens(line.tokens, text, line.startTime, line.endTime);
     return {
       id,
       startTime: line.startTime,
@@ -212,6 +268,7 @@ export function validateDraftUpdate(update: LocalLyricsDraftUpdate): LocalLyrics
       text,
       confidence,
       flags: cleanFlags(line.flags),
+      ...(tokens ? { tokens } : {}),
     };
   });
   for (let index = 1; index < lines.length; index += 1) {

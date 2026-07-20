@@ -34,6 +34,12 @@ const api = {
     getState: vi.fn(),
     saveCheckpoint: vi.fn(),
   },
+  visuals: {
+    getAnalysis: vi.fn(),
+    reanalyze: vi.fn(),
+    onAnalysisChanged: vi.fn(() => () => undefined),
+    onAnalysisProgress: vi.fn(() => () => undefined),
+  },
   lyrics: {
     load: vi.fn(),
     writeAdjustedTiming: vi.fn(),
@@ -61,6 +67,8 @@ const api = {
   },
   app: {
     getVersion: vi.fn(),
+    setFullscreen: vi.fn(),
+    onFullscreenChanged: vi.fn(() => () => undefined),
     onPlaybackFlushRequested: vi.fn(() => () => undefined),
     completePlaybackFlush: vi.fn(),
   },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { normalizeTrackLanguage } from './track-language';
+import { normalizeTrackLanguage, toWhisperLanguageCode } from './track-language';
 
 describe('normalizeTrackLanguage', () => {
   it.each([
@@ -21,5 +21,21 @@ describe('normalizeTrackLanguage', () => {
   it('ignores unsupported and empty values', () => {
     expect(normalizeTrackLanguage('fra')).toBeNull();
     expect(normalizeTrackLanguage('')).toBeNull();
+  });
+});
+
+describe('toWhisperLanguageCode', () => {
+  it.each([
+    ['zho', 'zh'],
+    ['eng', 'en'],
+    ['jpn', 'ja'],
+    ['kor', 'ko'],
+  ] as const)('maps library language %s to WhisperX code %s', (input, expected) => {
+    expect(toWhisperLanguageCode(input)).toBe(expected);
+  });
+
+  it('does not force a speech language for instrumental or unset tracks', () => {
+    expect(toWhisperLanguageCode('zxx')).toBeUndefined();
+    expect(toWhisperLanguageCode(null)).toBeUndefined();
   });
 });

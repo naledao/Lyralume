@@ -1,8 +1,7 @@
-import { audioEngine } from '../audio/AudioEngine';
-import { formatTime } from '../lib/format';
 import { currentTrackFromState, useAppStore } from '../store/useAppStore';
 import { Artwork } from './Artwork';
 import { Icon } from './Icon';
+import { PlaybackTimeline } from './PlaybackTimeline';
 
 const PLAYBACK_MODE_LABELS = {
   sequence: '顺序播放',
@@ -60,21 +59,12 @@ export function PlayerControls() {
           </button>
           <button type="button" onClick={nextTrack} disabled={!track} aria-label="下一首"><Icon name="forward" /></button>
         </div>
-        <div className="timeline">
-          <span>{formatTime(currentTime)}</span>
-          <input
-            type="range"
-            min="0"
-            max={Math.max(safeDuration, 1)}
-            step="0.05"
-            value={Math.min(currentTime, Math.max(safeDuration, 1))}
-            onChange={(event) => audioEngine.seek(Number(event.target.value))}
-            disabled={!track}
-            style={{ '--range-progress': `${safeDuration ? (currentTime / safeDuration) * 100 : 0}%` } as React.CSSProperties}
-            aria-label="播放进度"
-          />
-          <span>{formatTime(safeDuration)}</span>
-        </div>
+        <PlaybackTimeline
+          className="timeline"
+          trackId={track?.id ?? null}
+          currentTime={currentTime}
+          duration={safeDuration}
+        />
       </div>
 
       <div className="volume-control">

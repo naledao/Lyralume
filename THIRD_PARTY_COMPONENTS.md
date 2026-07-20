@@ -20,4 +20,19 @@ Windows x64 平台包内可执行文件：
 | `vendor/x86_64-pc-windows-msvc/codex-resources/codex-command-runner.exe` | `61578D088B9EA335C7A66BF4B1B0ABE615DD8C2B37DDE28B8618084F353989D7` |
 | `vendor/x86_64-pc-windows-msvc/codex-resources/codex-windows-sandbox-setup.exe` | `26D484975FCA809537BF279DE0330BB756047B0B3645C65B5B46930970AE1DFF` |
 
+## fft.js
+
+- 用途：实时与整曲音频分析共用的 FFT 实现。
+- 版本：4.0.4，通过 `pnpm-lock.yaml` 精确锁定。
+- 来源：[indutny/fft.js](https://github.com/indutny/fft.js)，npm 包 `fft.js`。
+- 许可证：MIT（以 4.0.4 包内 `LICENSE` 为准）。
+- 包完整性：`sha512-f9c00hphOgeQTlDyavwTtu6RiK8AIFjD6+jvXkNkpeQ7rirK3uFWVpalkoS4LAwbdX7mfZ8aoBfFVQX1Re/8aw==`。
+
+## FFmpeg
+
+- 用途：将音乐文件只读解码为单声道 PCM，供整曲分析使用；不创建、不覆盖或重新编码用户音频。
+- 当前分发状态：核心安装包不附带 FFmpeg；开发环境从 `LYRALUME_FFMPEG_PATH` 或 `PATH` 解析。缺失时自动退回实时视觉。
+- 预留打包位置：`resources/tools/ffmpeg/ffmpeg.exe`。
+- 分发要求：仅可放入审核通过的 LGPL 构建；正式加入安装包时必须补录来源、版本、构建配置、许可证文本及实际文件 SHA-256。
+
 本记录不是法律意见；正式发布前仍需复核上游许可证文本、NOTICE 要求和分发义务。

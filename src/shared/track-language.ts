@@ -8,6 +8,15 @@ export const TRACK_LANGUAGE_OPTIONS = [
 
 export type TrackLanguage = (typeof TRACK_LANGUAGE_OPTIONS)[number]['value'];
 
+export type WhisperLanguageCode = 'zh' | 'en' | 'ja' | 'ko';
+
+const WHISPER_LANGUAGE_CODES: Readonly<Partial<Record<TrackLanguage, WhisperLanguageCode>>> = {
+  zho: 'zh',
+  eng: 'en',
+  jpn: 'ja',
+  kor: 'ko',
+};
+
 const TRACK_LANGUAGE_VALUES = new Set<string>(
   TRACK_LANGUAGE_OPTIONS.map((option) => option.value),
 );
@@ -51,4 +60,10 @@ export function normalizeTrackLanguage(value: string | null | undefined): TrackL
 
 export function getTrackLanguageLabel(language: TrackLanguage | null): string {
   return TRACK_LANGUAGE_OPTIONS.find((option) => option.value === language)?.label ?? '未设置';
+}
+
+export function toWhisperLanguageCode(
+  language: TrackLanguage | null | undefined,
+): WhisperLanguageCode | undefined {
+  return language ? WHISPER_LANGUAGE_CODES[language] : undefined;
 }

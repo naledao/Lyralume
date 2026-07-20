@@ -131,6 +131,17 @@ describe('LocalLyricsEditor', () => {
     expect(callbacks.onWriteTag).not.toHaveBeenCalled();
   });
 
+  it('allows an existing draft to be regenerated with CUDA or CPU', () => {
+    const callbacks = handlers();
+    render(<LocalLyricsEditor track={track} task={task} busy={false} {...callbacks} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'CUDA 重生成' }));
+    fireEvent.click(screen.getByRole('button', { name: 'CPU 重生成' }));
+
+    expect(callbacks.onStart).toHaveBeenNthCalledWith(1, { device: 'cuda' });
+    expect(callbacks.onStart).toHaveBeenNthCalledWith(2, { device: 'cpu' });
+  });
+
   it('applies Codex structure and timing suggestions without saving and supports full undo', async () => {
     const callbacks = handlers();
     render(<LocalLyricsEditor track={track} task={task} busy={false} {...callbacks} />);

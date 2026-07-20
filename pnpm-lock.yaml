@@ -20,6 +20,9 @@ importers:
       electron-log:
         specifier: 5.4.4
         version: 5.4.4
+      fft.js:
+        specifier: 4.0.4
+        version: 4.0.4
       gsap:
         specifier: 3.15.0
         version: 3.15.0
@@ -1127,6 +1130,9 @@ packages:
     peerDependenciesMeta:
       picomatch:
         optional: true
+
+  fft.js@4.0.4:
+    resolution: {integrity: sha512-f9c00hphOgeQTlDyavwTtu6RiK8AIFjD6+jvXkNkpeQ7rirK3uFWVpalkoS4LAwbdX7mfZ8aoBfFVQX1Re/8aw==}
 
   file-type@21.3.4:
     resolution: {integrity: sha512-Ievi/yy8DS3ygGvT47PjSfdFoX+2isQueoYP1cntFW1JLYAuS4GD7NUPGg4zv2iZfV52uDyk5w5Z0TdpRS6Q1g==}
@@ -3286,6 +3292,8 @@ snapshots:
   fdir@6.5.0(picomatch@4.0.5):
     optionalDependencies:
       picomatch: 4.0.5
+
+  fft.js@4.0.4: {}
 
   file-type@21.3.4:
     dependencies:

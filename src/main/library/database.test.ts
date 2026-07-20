@@ -3,9 +3,10 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LibraryDatabase } from './database';
 import type { ScannedTrack } from './types';
+import { createFallbackProfile, createVisualDNA } from '../../shared/visual-analysis';
 
 const temporaryDirectories: string[] = [];
 
@@ -35,12 +36,44 @@ function scannedTrack(rootPath: string, filePath: string): ScannedTrack {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const directory of temporaryDirectories.splice(0)) {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
 describe('LibraryDatabase', () => {
+  it('sorts songs by first-added time and preserves that order across rescans', async () => {
+    const { database, directory } = await createDatabase();
+    const olderPath = path.join(directory, 'older.flac');
+    const newerPath = path.join(directory, 'newer.flac');
+    const older = {
+      ...scannedTrack(directory, olderPath),
+      id: '111111111111111111111111',
+      fileName: 'older.flac',
+      title: 'Zebra',
+    };
+    const newer = {
+      ...scannedTrack(directory, newerPath),
+      id: '222222222222222222222222',
+      fileName: 'newer.flac',
+      title: 'Alpha',
+    };
+    const now = vi.spyOn(Date, 'now');
+
+    now.mockReturnValue(1_000);
+    database.syncRoot(directory, [older], new Set([olderPath]));
+    now.mockReturnValue(2_000);
+    database.syncRoot(directory, [older, newer], new Set([olderPath, newerPath]));
+
+    expect(database.getSnapshot().tracks.map((track) => track.id)).toEqual([newer.id, older.id]);
+
+    now.mockReturnValue(3_000);
+    database.syncRoot(directory, [older, newer], new Set([olderPath, newerPath]));
+    expect(database.getSnapshot().tracks.map((track) => track.id)).toEqual([newer.id, older.id]);
+    database.close();
+  });
+
   it('persists tracks but exposes only controlled media URLs', async () => {
     const { database, directory } = await createDatabase();
     const musicPath = path.join(directory, 'track.flac');
@@ -109,10 +142,12 @@ describe('LibraryDatabase', () => {
     expect(database.setTrackMetadata(track.id, { language: 'jpn' })).toBe(true);
     database.syncRoot(directory, [{ ...track, language: 'eng' }], new Set([musicPath]));
     expect(database.getSnapshot().tracks[0].language).toBe('jpn');
+    expect(database.getTrackLocation(track.id)?.language).toBe('jpn');
 
     expect(database.setTrackMetadata(track.id, { language: '' })).toBe(true);
     database.syncRoot(directory, [{ ...track, language: 'eng' }], new Set([musicPath]));
     expect(database.getSnapshot().tracks[0].language).toBeNull();
+    expect(database.getTrackLocation(track.id)?.language).toBeNull();
     database.close();
   });
 
@@ -220,6 +255,46 @@ describe('LibraryDatabase', () => {
 
     expect(database.removeTrack(track.id)).toMatchObject({ rootRemoved: true, rootPath: musicPath });
     expect(database.getSnapshot()).toEqual({ tracks: [], roots: [] });
+    database.close();
+  });
+
+  it('persists visual analysis and preserves the last good result after failure', async () => {
+    const { database, directory } = await createDatabase();
+    const musicPath = path.join(directory, 'track.flac');
+    const track = scannedTrack(directory, musicPath);
+    database.syncRoot(directory, [track], new Set([musicPath]));
+    const profile = createFallbackProfile();
+    const visualDNA = createVisualDNA(profile, track.id);
+
+    database.saveVisualAnalysis({
+      trackId: track.id,
+      status: 'ready',
+      progress: 1,
+      analysisVersion: profile.analysisVersion,
+      mappingVersion: visualDNA.mappingVersion,
+      sourceSize: track.fileSize,
+      sourceModifiedAt: track.modifiedAt,
+      profile,
+      timeline: { beatsMs: [100, 600], sections: [] },
+      visualDNA,
+      updatedAt: 1,
+    });
+    database.saveVisualAnalysis({
+      ...database.getVisualAnalysis(track.id)!,
+      status: 'failed',
+      error: 'decoder failed',
+      profile: undefined,
+      timeline: undefined,
+      visualDNA: undefined,
+      updatedAt: 2,
+    });
+
+    expect(database.getVisualAnalysis(track.id)).toMatchObject({
+      status: 'failed',
+      error: 'decoder failed',
+      profile,
+      visualDNA,
+    });
     database.close();
   });
 });

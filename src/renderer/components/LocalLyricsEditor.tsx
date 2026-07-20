@@ -204,9 +204,23 @@ export function LocalLyricsEditor({
           <strong>校对歌词草稿</strong>
           <span>{lines.length} 行 · {lines.filter((line) => line.flags.length > 0).length} 行需留意</span>
         </div>
-        <div className="local-editor__preview-switch">
-          <button type="button" data-active={previewSource === 'original'} onClick={() => setPreviewSource('original')}>原曲</button>
-          <button type="button" data-active={previewSource === 'vocals'} disabled={!task.vocalsPlaybackUrl} onClick={() => setPreviewSource('vocals')}>临时人声</button>
+        <div className="local-editor__summary-tools">
+          <div className="local-editor__preview-switch">
+            <button type="button" data-active={previewSource === 'original'} onClick={() => setPreviewSource('original')}>原曲</button>
+            <button type="button" data-active={previewSource === 'vocals'} disabled={!task.vocalsPlaybackUrl} onClick={() => setPreviewSource('vocals')}>临时人声</button>
+          </div>
+          <div className="local-editor__regenerate" aria-label="重新生成本机歌词">
+            <button
+              type="button"
+              disabled={busy || proofreadBusy || modelSettingsBusy}
+              onClick={() => onStart({ device: 'cuda' })}
+            >CUDA 重生成</button>
+            <button
+              type="button"
+              disabled={busy || proofreadBusy || modelSettingsBusy}
+              onClick={() => onStart({ device: 'cpu' })}
+            >CPU 重生成</button>
+          </div>
         </div>
       </div>
       <section className="local-editor__codex" aria-label="Codex 歌词校对">
@@ -330,7 +344,7 @@ export function LocalLyricsEditor({
               disabled={proofreadBusy}
               value={line.text}
               onChange={(event) => setLines((current) => current.map((item) => (
-                item.id === line.id ? { ...item, text: event.target.value } : item
+                item.id === line.id ? { ...item, text: event.target.value, tokens: undefined } : item
               )))}
             />
             <div className="draft-line__meta">

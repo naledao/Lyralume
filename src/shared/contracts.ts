@@ -1,4 +1,23 @@
 import type { TrackLanguage } from './track-language.js';
+import type { PreciseLyricLineTiming, TimedLyricToken } from './lrc.js';
+import type {
+  TrackVisualAnalysis,
+  VisualAnalysisProgress,
+} from './visual-analysis.js';
+
+export type {
+  AudioDistribution,
+  AudioFeatureFrame,
+  TrackAudioProfile,
+  TrackVisualAnalysis,
+  TrackVisualDNA,
+  TrackVisualSection,
+  TrackVisualTimeline,
+  VisualAnalysisProgress,
+  VisualAnalysisStatus,
+  VisualAxes,
+  VisualShapeFamily,
+} from './visual-analysis.js';
 
 export {
   getTrackLanguageLabel,
@@ -121,6 +140,7 @@ export interface LocalLyricsDraftLine {
   text: string;
   confidence: number | null;
   flags: LocalLyricsLineFlag[];
+  tokens?: TimedLyricToken[];
 }
 
 export interface LocalLyricsTaskError {
@@ -351,6 +371,7 @@ export interface LyricsDocument {
   fileName?: string;
   source?: 'lrc' | 'embedded';
   revision?: string;
+  preciseTiming?: PreciseLyricLineTiming[];
   message?: string;
 }
 
@@ -374,6 +395,12 @@ export interface LyralumeApi {
   playback: {
     getState(): Promise<PlaybackStateSnapshot>;
     saveCheckpoint(checkpoint: PlaybackCheckpoint): Promise<PlaybackProgress>;
+  };
+  visuals: {
+    getAnalysis(trackId: string): Promise<TrackVisualAnalysis>;
+    reanalyze(trackId: string): Promise<TrackVisualAnalysis>;
+    onAnalysisChanged(callback: (analysis: TrackVisualAnalysis) => void): () => void;
+    onAnalysisProgress(callback: (progress: VisualAnalysisProgress) => void): () => void;
   };
   lyrics: {
     load(trackId: string): Promise<LyricsDocument>;
@@ -418,6 +445,8 @@ export interface LyralumeApi {
   };
   app: {
     getVersion(): Promise<string>;
+    setFullscreen(fullscreen: boolean): Promise<boolean>;
+    onFullscreenChanged(callback: (fullscreen: boolean) => void): () => void;
     onPlaybackFlushRequested(callback: (requestId: string) => void): () => void;
     completePlaybackFlush(requestId: string): void;
   };
@@ -436,6 +465,10 @@ export const IPC_CHANNELS = {
   playbackCheckpoint: 'playback:checkpoint',
   playbackFlushRequested: 'playback:flush-requested',
   playbackFlushComplete: 'playback:flush-complete',
+  visualAnalysisGet: 'visual-analysis:get',
+  visualAnalysisRun: 'visual-analysis:run',
+  visualAnalysisChanged: 'visual-analysis:changed',
+  visualAnalysisProgress: 'visual-analysis:progress',
   lyricsLoad: 'lyrics:load',
   lyricsWriteAdjustedTiming: 'lyrics:write-adjusted-timing',
   lyricsOnlineTask: 'lyrics:online-task',
@@ -460,4 +493,6 @@ export const IPC_CHANNELS = {
   lyricsBilingualWriteTag: 'lyrics:bilingual-write-tag',
   lyricsBilingualChanged: 'lyrics:bilingual-changed',
   appVersion: 'app:version',
+  appSetFullscreen: 'app:set-fullscreen',
+  appFullscreenChanged: 'app:fullscreen-changed',
 } as const;

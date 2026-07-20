@@ -23,6 +23,10 @@ describe('local lyrics draft compiler', () => {
       startTime: 1,
       endTime: 2.2,
       flags: [],
+      tokens: [
+        { text: '你好', startTime: 1, endTime: 1.5 },
+        { text: '世界。', startTime: 1.6, endTime: 2.2 },
+      ],
     });
     expect(lines[1]).toMatchObject({
       text: 'again',
@@ -57,5 +61,28 @@ describe('local lyrics draft compiler', () => {
       offsetMs: 0,
       lines: [{ id: 'a', startTime: 1, endTime: 2, text: 'A\nB\0', confidence: 1, flags: [] }],
     }).lines[0].text).toBe('A B');
+  });
+
+  it('keeps matching fine timing but drops it after the lyric text changes', () => {
+    const line = {
+      id: 'line-1',
+      startTime: 1,
+      endTime: 2,
+      text: 'Hello world',
+      confidence: 0.9,
+      flags: [] as const,
+      tokens: [
+        { text: 'Hello ', startTime: 1, endTime: 1.4 },
+        { text: 'world', startTime: 1.4, endTime: 2 },
+      ],
+    };
+    const preserved = validateDraftUpdate({ lines: [{ ...line, flags: [] }], offsetMs: 0 });
+    const edited = validateDraftUpdate({
+      lines: [{ ...line, text: 'Hello there', flags: [] }],
+      offsetMs: 0,
+    });
+
+    expect(preserved.lines[0].tokens).toHaveLength(2);
+    expect(edited.lines[0].tokens).toBeUndefined();
   });
 });

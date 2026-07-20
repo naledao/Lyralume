@@ -60,6 +60,7 @@ describe('Codex proofreading response validation', () => {
         '--ignore-user-config',
         '--sandbox',
         'read-only',
+        'model_reasoning_effort="max"',
         'web_search="live"',
         '--output-schema',
         '--output-last-message',

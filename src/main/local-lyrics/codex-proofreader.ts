@@ -93,7 +93,7 @@ interface CodexCliResolutionOptions {
 }
 
 const MAX_PROCESS_OUTPUT = 1024 * 1024;
-const DEFAULT_TIMEOUT_MS = 3 * 60 * 1000;
+const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 
 async function fileExists(filePath: string): Promise<boolean> {
   return access(filePath).then(() => true, () => false);
@@ -572,6 +572,8 @@ export class CodexCliProofreader implements LocalLyricsProofreader {
         'read-only',
         '-c',
         'approval_policy="never"',
+        '-c',
+        'model_reasoning_effort="max"',
         '-c',
         'web_search="live"',
         '--output-schema',

@@ -4,11 +4,22 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   CodexBilingualError,
   CodexSdkBilingualTranslator,
+  CodexSdkStructuredRunner,
   buildResearchPrompt,
   resolvePackagedCodexRuntime,
   type BilingualTranslationInput,
   type CodexStructuredRunner,
 } from './codex-bilingual-translator';
+
+const codexConstructor = vi.hoisted(() => vi.fn());
+
+vi.mock('@openai/codex-sdk', () => ({
+  Codex: class {
+    constructor(options: unknown) {
+      codexConstructor(options);
+    }
+  },
+}));
 
 const input: BilingualTranslationInput = {
   title: 'Crystal Ball',
@@ -49,6 +60,16 @@ function successfulRunner(): CodexStructuredRunner {
 }
 
 describe('Codex bilingual translation', () => {
+  it('configures Codex translation with max reasoning effort', () => {
+    codexConstructor.mockClear();
+
+    new CodexSdkStructuredRunner();
+
+    expect(codexConstructor).toHaveBeenCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ model_reasoning_effort: 'max' }),
+    }));
+  });
+
   it('resolves the packaged Windows CLI from the physical app.asar.unpacked directory', () => {
     const runtime = resolvePackagedCodexRuntime('C:\\Program Files\\Lyralume\\resources', {
       platform: 'win32',

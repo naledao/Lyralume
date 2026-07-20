@@ -55,6 +55,7 @@ describe('LyricsOffsetService', () => {
       title: 'Song',
       artist: 'Artist',
       album: 'Album',
+      language: null,
       duration: 10,
     };
     const source = await loadPreferredLyricsSource(track);
@@ -99,6 +100,7 @@ describe('LyricsOffsetService', () => {
       title: 'Song',
       artist: 'Artist',
       album: 'Album',
+      language: null,
       duration: 10,
     };
     const database = { getTrackLocation: vi.fn(() => track) } as unknown as LibraryDatabase;

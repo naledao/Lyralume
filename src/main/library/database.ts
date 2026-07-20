@@ -13,6 +13,11 @@ import type {
   TrackMetadataUpdate,
 } from '../../shared/contracts.js';
 import {
+  AUDIO_ANALYSIS_VERSION,
+  VISUAL_MAPPING_VERSION,
+  type TrackVisualAnalysis,
+} from '../../shared/visual-analysis.js';
+import {
   normalizeTrackLanguage,
   UNKNOWN_ALBUM,
   UNKNOWN_ARTIST,
@@ -29,6 +34,7 @@ interface TrackRow {
   duration: number;
   file_size: number;
   modified_at: number;
+  added_at: number;
   lrc_path: string | null;
   has_embedded_lyrics: number;
   artwork_mime: string | null;
@@ -45,6 +51,22 @@ interface PlaybackProgressRow {
   duration_ms: number;
   completed: number;
   reason: PlaybackCheckpoint['reason'];
+  updated_at: number;
+}
+
+interface VisualAnalysisRow {
+  track_id: string;
+  status: TrackVisualAnalysis['status'];
+  progress: number;
+  analysis_version: number;
+  mapping_version: number;
+  source_size: number;
+  source_modified_at: number;
+  content_fingerprint: string | null;
+  profile_json: string | null;
+  timeline_json: string | null;
+  visual_dna_json: string | null;
+  error: string | null;
   updated_at: number;
 }
 
@@ -88,6 +110,7 @@ export class LibraryDatabase {
         duration REAL NOT NULL DEFAULT 0,
         file_size INTEGER NOT NULL,
         modified_at INTEGER NOT NULL,
+        added_at INTEGER NOT NULL,
         lrc_path TEXT,
         has_embedded_lyrics INTEGER NOT NULL DEFAULT 0,
         prefer_embedded_lyrics INTEGER NOT NULL DEFAULT 0,
@@ -151,6 +174,26 @@ export class LibraryDatabase {
         current_track_id TEXT,
         updated_at INTEGER NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS track_visual_analysis (
+        track_id TEXT PRIMARY KEY,
+        status TEXT NOT NULL,
+        progress REAL NOT NULL DEFAULT 0,
+        analysis_version INTEGER NOT NULL,
+        mapping_version INTEGER NOT NULL,
+        source_size INTEGER NOT NULL,
+        source_modified_at REAL NOT NULL,
+        content_fingerprint TEXT,
+        profile_json TEXT,
+        timeline_json TEXT,
+        visual_dna_json TEXT,
+        error TEXT,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_track_visual_analysis_status
+        ON track_visual_analysis(status, updated_at);
     `);
 
     const trackColumns = new Set(
@@ -182,6 +225,15 @@ export class LibraryDatabase {
         'ALTER TABLE tracks ADD COLUMN prefer_embedded_lyrics INTEGER NOT NULL DEFAULT 0',
       );
     }
+    if (!trackColumns.has('added_at')) {
+      this.database.exec(`
+        ALTER TABLE tracks ADD COLUMN added_at INTEGER NOT NULL DEFAULT 0;
+        UPDATE tracks SET added_at = updated_at WHERE added_at = 0;
+      `);
+    }
+    this.database.exec(
+      'CREATE INDEX IF NOT EXISTS idx_tracks_added_at ON tracks(added_at DESC)',
+    );
   }
 
   addRoot(rootPath: string): void {
@@ -204,10 +256,10 @@ export class LibraryDatabase {
     const upsert = this.database.prepare(`
       INSERT INTO tracks (
         id, root_path, file_path, file_name, title, artist, album, language, duration,
-        file_size, modified_at, lrc_path, has_embedded_lyrics, artwork_mime, artwork, updated_at
+        file_size, modified_at, added_at, lrc_path, has_embedded_lyrics, artwork_mime, artwork, updated_at
       ) VALUES (
         @id, @rootPath, @filePath, @fileName, @title, @artist, @album, @language, @duration,
-        @fileSize, @modifiedAt, @lrcPath, @hasEmbeddedLyrics, @artworkMime, @artwork, @updatedAt
+        @fileSize, @modifiedAt, @addedAt, @lrcPath, @hasEmbeddedLyrics, @artworkMime, @artwork, @updatedAt
       )
       ON CONFLICT(file_path) DO UPDATE SET
         root_path = excluded.root_path,
@@ -243,6 +295,7 @@ export class LibraryDatabase {
             ...track,
             language: track.language ?? null,
             hasEmbeddedLyrics: track.hasEmbeddedLyrics ? 1 : 0,
+            addedAt: updatedAt,
             updatedAt,
           });
         }
@@ -263,9 +316,13 @@ export class LibraryDatabase {
                 COALESCE(NULLIF(album_override, ''), album) AS album,
                 COALESCE(language_override, language) AS language,
                 duration, file_size,
-                modified_at, lrc_path, has_embedded_lyrics, artwork_mime
+                modified_at, added_at, lrc_path, has_embedded_lyrics, artwork_mime
          FROM tracks
-         ORDER BY artist COLLATE NOCASE, album COLLATE NOCASE, title COLLATE NOCASE`,
+         ORDER BY added_at DESC,
+                  artist COLLATE NOCASE,
+                  album COLLATE NOCASE,
+                  title COLLATE NOCASE,
+                  id ASC`,
       )
       .all() as TrackRow[];
 
@@ -300,7 +357,8 @@ export class LibraryDatabase {
                 COALESCE(NULLIF(title_override, ''), title) AS title,
                 COALESCE(NULLIF(artist_override, ''), artist) AS artist,
                 COALESCE(NULLIF(album_override, ''), album) AS album,
-                duration
+                COALESCE(language_override, language) AS language,
+                duration, file_size, modified_at
          FROM tracks WHERE id = ?`,
       )
       .get(id) as {
@@ -311,7 +369,10 @@ export class LibraryDatabase {
         title: string;
         artist: string;
         album: string;
+        language: string | null;
         duration: number;
+        file_size: number;
+        modified_at: number;
       } | undefined;
     if (!row) return undefined;
     return {
@@ -322,7 +383,113 @@ export class LibraryDatabase {
       title: row.title,
       artist: row.artist,
       album: row.album,
+      language: normalizeTrackLanguage(row.language),
       duration: row.duration,
+      fileSize: row.file_size,
+      modifiedAt: row.modified_at,
+    };
+  }
+
+  createPendingVisualAnalysis(
+    trackId: string,
+    sourceSize: number,
+    sourceModifiedAt: number,
+  ): TrackVisualAnalysis {
+    return this.saveVisualAnalysis({
+      trackId,
+      status: 'pending',
+      progress: 0,
+      analysisVersion: AUDIO_ANALYSIS_VERSION,
+      mappingVersion: VISUAL_MAPPING_VERSION,
+      sourceSize,
+      sourceModifiedAt,
+      updatedAt: Date.now(),
+    });
+  }
+
+  getVisualAnalysis(trackId: string): TrackVisualAnalysis | undefined {
+    const row = this.database
+      .prepare('SELECT * FROM track_visual_analysis WHERE track_id = ?')
+      .get(trackId) as VisualAnalysisRow | undefined;
+    return row ? this.toVisualAnalysis(row) : undefined;
+  }
+
+  saveVisualAnalysis(analysis: TrackVisualAnalysis): TrackVisualAnalysis {
+    this.database.prepare(`
+      INSERT INTO track_visual_analysis(
+        track_id, status, progress, analysis_version, mapping_version,
+        source_size, source_modified_at, content_fingerprint,
+        profile_json, timeline_json, visual_dna_json, error, updated_at
+      ) VALUES (
+        @trackId, @status, @progress, @analysisVersion, @mappingVersion,
+        @sourceSize, @sourceModifiedAt, @contentFingerprint,
+        @profileJson, @timelineJson, @visualDnaJson, @error, @updatedAt
+      )
+      ON CONFLICT(track_id) DO UPDATE SET
+        status = excluded.status,
+        progress = excluded.progress,
+        analysis_version = excluded.analysis_version,
+        mapping_version = excluded.mapping_version,
+        source_size = excluded.source_size,
+        source_modified_at = excluded.source_modified_at,
+        content_fingerprint = COALESCE(excluded.content_fingerprint, content_fingerprint),
+        profile_json = COALESCE(excluded.profile_json, profile_json),
+        timeline_json = COALESCE(excluded.timeline_json, timeline_json),
+        visual_dna_json = COALESCE(excluded.visual_dna_json, visual_dna_json),
+        error = excluded.error,
+        updated_at = excluded.updated_at
+    `).run({
+      ...analysis,
+      contentFingerprint: analysis.contentFingerprint ?? null,
+      profileJson: analysis.profile ? JSON.stringify(analysis.profile) : null,
+      timelineJson: analysis.timeline ? JSON.stringify(analysis.timeline) : null,
+      visualDnaJson: analysis.visualDNA ? JSON.stringify(analysis.visualDNA) : null,
+      error: analysis.error ?? null,
+    });
+    return this.getVisualAnalysis(analysis.trackId) ?? analysis;
+  }
+
+  updateVisualAnalysisProgress(trackId: string, progress: number): TrackVisualAnalysis | undefined {
+    this.database.prepare(`
+      UPDATE track_visual_analysis
+      SET progress = ?, updated_at = ?
+      WHERE track_id = ? AND status = 'running'
+    `).run(Math.min(1, Math.max(0, progress)), Date.now(), trackId);
+    return this.getVisualAnalysis(trackId);
+  }
+
+  markVisualAnalysisStale(trackId: string): TrackVisualAnalysis | undefined {
+    this.database.prepare(`
+      UPDATE track_visual_analysis
+      SET status = 'stale', progress = 0, updated_at = ?
+      WHERE track_id = ? AND status != 'running'
+    `).run(Date.now(), trackId);
+    return this.getVisualAnalysis(trackId);
+  }
+
+  private toVisualAnalysis(row: VisualAnalysisRow): TrackVisualAnalysis {
+    const parse = <T>(value: string | null): T | undefined => {
+      if (!value) return undefined;
+      try {
+        return JSON.parse(value) as T;
+      } catch {
+        return undefined;
+      }
+    };
+    return {
+      trackId: row.track_id,
+      status: row.status,
+      progress: row.progress,
+      analysisVersion: row.analysis_version,
+      mappingVersion: row.mapping_version,
+      sourceSize: row.source_size,
+      sourceModifiedAt: row.source_modified_at,
+      contentFingerprint: row.content_fingerprint ?? undefined,
+      profile: parse(row.profile_json),
+      timeline: parse(row.timeline_json),
+      visualDNA: parse(row.visual_dna_json),
+      error: row.error ?? undefined,
+      updatedAt: row.updated_at,
     };
   }
 

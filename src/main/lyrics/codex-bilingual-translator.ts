@@ -9,7 +9,7 @@ import type {
 
 const MAX_LYRIC_LINES = 1_000;
 const MAX_LYRIC_CHARACTERS = 120_000;
-const DEFAULT_TURN_TIMEOUT_MS = 4 * 60 * 1_000;
+const DEFAULT_TURN_TIMEOUT_MS = 30 * 60 * 1_000;
 
 export interface BilingualTranslationInputLine {
   id: string;
@@ -188,6 +188,7 @@ export class CodexSdkStructuredRunner implements CodexStructuredRunner {
       ...packagedRuntime,
       config: {
         history: { persistence: 'none' },
+        model_reasoning_effort: 'max',
         show_raw_agent_reasoning: false,
       },
     });
@@ -201,7 +202,6 @@ export class CodexSdkStructuredRunner implements CodexStructuredRunner {
         sandboxMode: 'read-only',
         workingDirectory,
         skipGitRepoCheck: true,
-        modelReasoningEffort: 'medium',
         networkAccessEnabled: request.webSearchMode === 'live',
         webSearchMode: request.webSearchMode,
         approvalPolicy: 'never',

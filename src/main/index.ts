@@ -30,6 +30,9 @@ import { OnlineLyricsService } from './lyrics/online-lyrics-service.js';
 import { configureLogging, logger } from './logging.js';
 import { allowRendererMediaAccess } from './media-response.js';
 import { TrackWriteCoordinator } from './track-write-coordinator.js';
+import { setImmersiveFullscreenPriority } from './immersive-fullscreen.js';
+import { UtilityVisualAnalysisRunner } from './visual-analysis/runner.js';
+import { VisualAnalysisService } from './visual-analysis/service.js';
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 let mainWindow: BrowserWindow | null = null;
@@ -38,6 +41,7 @@ let library: LibraryService | null = null;
 let onlineLyrics: OnlineLyricsService | null = null;
 let localLyrics: LocalLyricsService | null = null;
 let bilingualLyrics: BilingualLyricsService | null = null;
+let visualAnalysis: VisualAnalysisService | null = null;
 let playbackFlushRequestSequence = 0;
 let quitPlaybackFlushed = false;
 let shutdownStarted = false;
@@ -135,6 +139,19 @@ function createWindow(): BrowserWindow {
     },
   });
   secureWebContents(window.webContents);
+  const notifyFullscreenChanged = (fullscreen: boolean): void => {
+    if (!window.webContents.isDestroyed()) {
+      window.webContents.send(IPC_CHANNELS.appFullscreenChanged, fullscreen);
+    }
+  };
+  window.on('enter-full-screen', () => {
+    setImmersiveFullscreenPriority(window, true);
+    notifyFullscreenChanged(true);
+  });
+  window.on('leave-full-screen', () => {
+    setImmersiveFullscreenPriority(window, false);
+    notifyFullscreenChanged(false);
+  });
   window.once('ready-to-show', () => window.show());
   window.on('close', (event) => {
     if (closeAllowedWindows.has(window) || shutdownStarted) return;
@@ -236,6 +253,16 @@ async function start(): Promise<void> {
     trackWrites,
   );
   const lyricsOffset = new LyricsOffsetService(database, library, kid3, trackWrites);
+  const bundledFfmpeg = path.join(process.resourcesPath, 'tools', 'ffmpeg', 'ffmpeg.exe');
+  visualAnalysis = new VisualAnalysisService(
+    database,
+    new UtilityVisualAnalysisRunner(
+      path.join(currentDirectory, 'visual-analysis', 'worker.js'),
+      existsSync(bundledFfmpeg)
+        ? bundledFfmpeg
+        : process.env.LYRALUME_FFMPEG_PATH || 'ffmpeg',
+    ),
+  );
   registerMediaProtocol();
   registerIpcHandlers(
     () => mainWindow,
@@ -245,9 +272,11 @@ async function start(): Promise<void> {
     localLyrics,
     bilingualLyrics,
     lyricsOffset,
+    visualAnalysis,
   );
   mainWindow = createWindow();
   await library.initializeWatchers();
+  visualAnalysis.scheduleLibrary(library.getSnapshot().tracks);
 
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({ responseHeaders: details.responseHeaders });
@@ -298,15 +327,18 @@ app.on('before-quit', (event) => {
   const activeDatabase = database;
   const activeLocalLyrics = localLyrics;
   const activeBilingualLyrics = bilingualLyrics;
+  const activeVisualAnalysis = visualAnalysis;
   library = null;
   database = null;
   onlineLyrics = null;
   localLyrics = null;
   bilingualLyrics = null;
+  visualAnalysis = null;
   void Promise.all([
     activeLibrary.close(),
     activeLocalLyrics?.close(),
     activeBilingualLyrics?.close(),
+    activeVisualAnalysis?.close(),
   ]).finally(() => {
     removeIpcHandlers();
     activeDatabase.close();

@@ -9,6 +9,7 @@ import type {
 } from '../../shared/contracts';
 import { findActiveLyricIndex, groupLyricLines } from '../../shared/lrc';
 import { audioEngine } from '../audio/AudioEngine';
+import { seekPlayback } from '../audio/seekPlayback';
 import {
   checkpointFromSnapshot,
   persistPlaybackCheckpoint,
@@ -226,8 +227,15 @@ export function LyricsPanel() {
             <button type="button" onClick={startOnlineSearch}>在线匹配</button>
           )}
           {!onlineMode && !localMode && !bilingualMode && currentTrackId && (
-            <button type="button" onClick={showLocalDraft}>
-              {localTask && localTask.status !== 'idle' ? '查看本曲任务' : '本地生成'}
+            <button
+              className="panel-heading__local-action"
+              type="button"
+              title={localTask && localTask.status !== 'idle'
+                ? '打开本机歌词任务，可校对或重新生成'
+                : '在本机生成歌词草稿'}
+              onClick={showLocalDraft}
+            >
+              本机生成
             </button>
           )}
           {!onlineMode && !localMode && !bilingualMode && status === 'loaded' && (
@@ -254,7 +262,7 @@ export function LyricsPanel() {
             onStart={handleStartBilingual}
             onCancel={() => void cancelBilingual()}
             onWriteTag={handleWriteBilingualTag}
-            onSeek={(time) => audioEngine.seek(time)}
+            onSeek={seekPlayback}
           />
         ) : localMode && track ? (
           <LocalLyricsEditor
@@ -315,7 +323,8 @@ export function LyricsPanel() {
                     className="lyric-line"
                     data-active={index === activeIndex}
                     key={cue.id}
-                    onClick={() => audioEngine.seek(cue.time + offsetMs / 1000)}
+                    onClick={() => seekPlayback(cue.time + offsetMs / 1000)}
+                    title={`跳转到 ${formatTime(Math.max(0, cue.time + offsetMs / 1000))}`}
                   >
                     {cue.lines.map((line) => (
                       <span

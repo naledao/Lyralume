@@ -156,6 +156,45 @@ afterEach(async () => {
 });
 
 describe('LocalLyricsService', () => {
+  it('uses the saved track language with the WhisperX language code', async () => {
+    const workers = successfulWorkers();
+    const context = await fixture(workers);
+    expect(context.database.setTrackMetadata(context.trackId, { language: 'zho' })).toBe(true);
+    const ready = waitForStatus(context.service, 'review');
+
+    const started = await context.service.start(context.trackId, { device: 'cpu' });
+    await ready;
+    await context.service.close();
+
+    expect(started.language).toBe('zh');
+    expect(workers.transcribe).toHaveBeenCalledWith(
+      expect.objectContaining({ language: 'zh' }),
+      expect.any(AbortSignal),
+      expect.any(Function),
+    );
+  });
+
+  it('keeps an explicitly requested WhisperX language ahead of track metadata', async () => {
+    const workers = successfulWorkers();
+    const context = await fixture(workers);
+    expect(context.database.setTrackMetadata(context.trackId, { language: 'zho' })).toBe(true);
+    const ready = waitForStatus(context.service, 'review');
+
+    const started = await context.service.start(context.trackId, {
+      device: 'cpu',
+      language: 'en',
+    });
+    await ready;
+    await context.service.close();
+
+    expect(started.language).toBe('en');
+    expect(workers.transcribe).toHaveBeenCalledWith(
+      expect.objectContaining({ language: 'en' }),
+      expect.any(AbortSignal),
+      expect.any(Function),
+    );
+  });
+
   it('passes a user-selected UVR model to the worker as an external read-only file', async () => {
     const workers = successfulWorkers();
     const context = await fixture(workers);

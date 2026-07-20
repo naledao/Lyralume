@@ -31,6 +31,12 @@ supported accelerated path. FFmpeg must be discoverable by both environments.
 Model downloads are performed by the upstream libraries into the app user-data
 model cache. A model manager and full cache lifecycle belong to phase four.
 
+For Chinese (`zh`) transcription, the Worker preserves WhisperX's original
+output in `raw-transcript.json`, then uses the Win11 NLS conversion tables to
+normalize the text to simplified Chinese before alignment and draft creation.
+This does not add a Python runtime dependency and does not alter non-Chinese
+transcripts.
+
 The CUDA requirement files deliberately pin the PyTorch CUDA build and ONNX
 Runtime together. Do not upgrade `onnxruntime-gpu` independently: newer builds
 may target a different CUDA major version even though the package name is the

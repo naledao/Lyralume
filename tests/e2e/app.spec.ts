@@ -31,6 +31,7 @@ test('starts with an empty, usable local library', async () => {
   await expect(page.getByRole('heading', { name: '从你的音乐文件夹开始' })).toBeVisible();
   await expect(page.getByRole('button', { name: '选择音乐文件夹' }).first()).toBeVisible();
   await expect(page.getByText('Lyralume', { exact: true }).first()).toBeVisible();
+  await expect(page.getByRole('button', { name: '进入沉浸视觉' })).toBeDisabled();
 });
 
 test('keeps Node isolated and exposes only the typed preload surface', async () => {
@@ -41,7 +42,36 @@ test('keeps Node isolated and exposes only the typed preload surface', async () 
   }));
   expect(boundary.requireType).toBe('undefined');
   expect(boundary.processType).toBe('undefined');
-  expect(boundary.apiKeys).toEqual(['app', 'library', 'lyrics', 'playback']);
+  expect(boundary.apiKeys).toEqual(['app', 'library', 'lyrics', 'playback', 'visuals']);
+});
+
+test('exposes visual quality and reduced-motion controls', async () => {
+  await page.getByRole('button', { name: '视觉设置' }).click();
+  await expect(page.getByRole('region', { name: '视觉设置' })).toBeVisible();
+  await expect(page.getByRole('combobox')).toHaveValue('balanced');
+  await expect(page.getByText('减少动态')).toBeVisible();
+});
+
+test('uses native window fullscreen for immersive mode and exits with Escape', async () => {
+  await page.evaluate(() => window.lyralume.app.setFullscreen(true));
+
+  await expect.poll(() => application.evaluate(({ BrowserWindow }) => (
+    {
+      fullscreen: BrowserWindow.getAllWindows()[0]?.isFullScreen() ?? false,
+      alwaysOnTop: BrowserWindow.getAllWindows()[0]?.isAlwaysOnTop() ?? false,
+    }
+  ))).toEqual({ fullscreen: true, alwaysOnTop: true });
+  await expect(page.locator('.immersive-player')).toBeVisible();
+
+  await page.keyboard.press('Escape');
+
+  await expect.poll(() => application.evaluate(({ BrowserWindow }) => (
+    {
+      fullscreen: BrowserWindow.getAllWindows()[0]?.isFullScreen() ?? false,
+      alwaysOnTop: BrowserWindow.getAllWindows()[0]?.isAlwaysOnTop() ?? false,
+    }
+  ))).toEqual({ fullscreen: false, alwaysOnTop: false });
+  await expect(page.locator('.immersive-player')).toHaveCount(0);
 });
 
 test('keeps lyric layout stable when active styling changes', async () => {

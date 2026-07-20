@@ -7,6 +7,8 @@ import { LibrarySidebar } from './components/LibrarySidebar';
 import { LyricsPanel } from './components/LyricsPanel';
 import { PlayerControls } from './components/PlayerControls';
 import { TrackList } from './components/TrackList';
+import { ImmersivePlayer } from './immersive/ImmersivePlayer';
+import { useImmersiveFullscreen } from './immersive/useImmersiveFullscreen';
 import { currentTrackFromState, useAppStore } from './store/useAppStore';
 import { AudioVisualizer } from './visuals/AudioVisualizer';
 
@@ -14,6 +16,7 @@ export function App() {
   const [query, setQuery] = useState('');
   const [version, setVersion] = useState('');
   const [dropActive, setDropActive] = useState(false);
+  const immersiveFullscreen = useImmersiveFullscreen();
   const dragDepth = useRef(0);
   const tracks = useAppStore((state) => state.tracks);
   const roots = useAppStore((state) => state.roots);
@@ -123,7 +126,10 @@ export function App() {
         <LibrarySidebar />
         <main className="content">
           <section className="now-playing">
-            <AudioVisualizer />
+            <AudioVisualizer
+              active={!immersiveFullscreen.active}
+              onEnterImmersive={() => void immersiveFullscreen.enter()}
+            />
             <div className="now-playing__identity">
               <Artwork track={track} className="now-playing__artwork" />
               <div>
@@ -165,6 +171,15 @@ export function App() {
         <LyricsPanel />
       </div>
       <PlayerControls />
+      {immersiveFullscreen.error && (
+        <div className="immersive-fullscreen-error" role="alert">
+          {immersiveFullscreen.error}
+        </div>
+      )}
+      <ImmersivePlayer
+        active={immersiveFullscreen.active}
+        onExit={() => void immersiveFullscreen.exit()}
+      />
     </div>
   );
 }

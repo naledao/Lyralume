@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { OnlineLyricsCandidate, Track } from '../../shared/contracts';
+import type { LocalLyricsTask, OnlineLyricsCandidate, Track } from '../../shared/contracts';
+import { audioEngine } from '../audio/AudioEngine';
 import { useAppStore } from '../store/useAppStore';
 import { CandidateCard, LyricsPanel } from './LyricsPanel';
 
@@ -40,6 +41,22 @@ const candidate: OnlineLyricsCandidate = {
   recommended: true,
 };
 
+const existingLocalTask: LocalLyricsTask = {
+  id: '62fa754e-65f0-4148-b68b-22278102ef18',
+  trackId: track.id,
+  status: 'review',
+  stage: 'draft',
+  progress: 1,
+  message: '请校对',
+  draftLines: [],
+  draftOffsetMs: 0,
+  lowConfidenceCount: 0,
+  lrcSaveStatus: 'not_started',
+  tagWriteStatus: 'not_started',
+  createdAt: 1,
+  updatedAt: 1,
+};
+
 describe('CandidateCard metadata actions', () => {
   it('keeps lyrics, title, artist and album as four independent direct-write actions', async () => {
     const onWriteLyrics = vi.fn();
@@ -74,6 +91,45 @@ describe('CandidateCard metadata actions', () => {
 });
 
 describe('LyricsPanel Codex progress', () => {
+  it('seeks playback immediately when a synchronized lyric is clicked', () => {
+    const seek = vi.spyOn(audioEngine, 'seek').mockImplementation(() => undefined);
+    useAppStore.setState({
+      tracks: [{ ...track, hasLyrics: true }],
+      currentTrackId: track.id,
+      currentTime: 0,
+      duration: track.duration,
+      lyricsStatus: 'loaded',
+      lyricLines: [{ id: 'seek-line', time: 12, text: '点击跳转歌词' }],
+      lyricOffsetMs: 500,
+      lyricsSource: 'lrc',
+      lyricsRevision: 'f'.repeat(64),
+      localLyricsProofreadProgress: {},
+    });
+
+    render(<LyricsPanel />);
+    fireEvent.click(screen.getByRole('button', { name: '点击跳转歌词' }));
+
+    expect(useAppStore.getState().currentTime).toBe(12.5);
+    expect(seek).toHaveBeenCalledWith(12.5);
+    seek.mockRestore();
+  });
+
+  it('keeps a visible local-generation entry when the current track already has a task', () => {
+    useAppStore.setState({
+      tracks: [{ ...track, hasLyrics: true }],
+      currentTrackId: track.id,
+      lyricsStatus: 'loaded',
+      localLyricsTask: existingLocalTask,
+      localLyricsTasks: { [track.id]: existingLocalTask },
+      localLyricsProofreadProgress: {},
+    });
+
+    render(<LyricsPanel />);
+
+    expect(screen.getByRole('button', { name: '本机生成' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: '查看本曲任务' })).not.toBeInTheDocument();
+  });
+
   it('renders a selected track when no Codex workflow events have been recorded', () => {
     useAppStore.setState({
       tracks: [track],

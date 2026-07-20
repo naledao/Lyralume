@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findActiveLyricIndex, groupLyricLines, parseLrc } from './lrc';
+import { findActiveLyricIndex, groupLyricLines, mergePreciseLyricTiming, parseLrc } from './lrc';
 
 describe('parseLrc', () => {
   it('parses metadata, multiple timestamps and millisecond precision', () => {
@@ -23,6 +23,38 @@ describe('parseLrc', () => {
     const parsed = parseLrc('[00:61.00]bad\nplain text\n[01:02.5]good');
     expect(parsed.lines).toHaveLength(1);
     expect(parsed.lines[0]).toMatchObject({ time: 62.5, text: 'good' });
+  });
+
+  it('parses enhanced LRC token timestamps without exposing timing tags as text', () => {
+    const parsed = parseLrc('[00:01.00]<00:01.00>Hello <00:01.50>world\n[00:03.00]Next');
+
+    expect(parsed.lines[0]).toMatchObject({
+      text: 'Hello world',
+      tokens: [
+        { text: 'Hello ', startTime: 1, endTime: 1.5 },
+        { text: 'world', startTime: 1.5, endTime: 3 },
+      ],
+    });
+  });
+});
+
+describe('mergePreciseLyricTiming', () => {
+  const timing = [{
+    time: 1,
+    endTime: 2,
+    text: 'Hello world',
+    tokens: [
+      { text: 'Hello ', startTime: 1, endTime: 1.4 },
+      { text: 'world', startTime: 1.4, endTime: 2 },
+    ],
+  }];
+
+  it('attaches exact companion timing and rejects stale edited text', () => {
+    const exact = mergePreciseLyricTiming(parseLrc('[00:01.00]Hello world').lines, timing);
+    const edited = mergePreciseLyricTiming(parseLrc('[00:01.00]Hello there').lines, timing);
+
+    expect(exact[0].tokens).toHaveLength(2);
+    expect(edited[0].tokens).toBeUndefined();
   });
 });
 
