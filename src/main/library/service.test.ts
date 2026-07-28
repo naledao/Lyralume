@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -41,6 +41,35 @@ afterEach(async () => {
 });
 
 describe('LibraryService', () => {
+  it('writes and verifies MP3 artwork before publishing it to the library', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'lyralume-service-test-'));
+    temporaryDirectories.push(directory);
+    const database = new LibraryDatabase(path.join(directory, 'library.db'));
+    databases.push(database);
+    const audioPath = path.join(directory, 'track.mp3');
+    const artworkPath = path.join(directory, 'cover.png');
+    const image = Buffer.concat([
+      Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+      Buffer.from('image-data'),
+    ]);
+    await writeFile(audioPath, 'audio');
+    await writeFile(artworkPath, image);
+    const track = scannedTrack(directory, audioPath);
+    database.syncRoot(directory, [track], new Set([audioPath]));
+    const writer: TrackMetadataWriter = {
+      writeMetadataAndVerify: vi.fn(async () => undefined),
+      writeArtworkAndVerify: vi.fn(async () => ({ mime: 'image/png', data: image })),
+    };
+    const service = new LibraryService(database, writer);
+    services.push(service);
+
+    const snapshot = await service.updateTrackArtwork(track.id, artworkPath);
+
+    expect(writer.writeArtworkAndVerify).toHaveBeenCalledWith(audioPath, artworkPath);
+    expect(snapshot.tracks[0]).toMatchObject({ hasArtwork: true });
+    expect(database.getArtwork(track.id)).toEqual({ mime: 'image/png', data: image });
+  });
+
   it('updates the database only after source-file metadata is written and verified', async () => {
     const directory = await mkdtemp(path.join(tmpdir(), 'lyralume-service-test-'));
     temporaryDirectories.push(directory);

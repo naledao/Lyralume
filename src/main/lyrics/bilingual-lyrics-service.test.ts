@@ -69,6 +69,8 @@ describe('BilingualLyricsService', () => {
           summary: '采用自然、有意境的表达。',
           lines: input.lines.map((line, index) => ({
             id: line.id,
+            time: line.time,
+            originalText: line.text,
             translatedText: index === 0 ? '第一行' : '第二行',
           })),
           sources: [{ title: 'Interview', url: 'https://example.com/interview' }],
@@ -96,6 +98,83 @@ describe('BilingualLyricsService', () => {
     database.close();
   });
 
+  it('uses the Codex line structure directly instead of restoring the source order', async () => {
+    const { database, track } = await createFixture();
+    const translator: BilingualLyricsTranslator = {
+      translate: vi.fn(async () => ({
+        summary: 'Codex 调整了草稿结构。',
+        lines: [
+          {
+            id: 'codex-second',
+            time: 4.25,
+            originalText: 'Second line, revised by Codex',
+            translatedText: '第二行，由 Codex 调整',
+          },
+          {
+            id: 'codex-blank',
+            time: 2,
+            originalText: '',
+            translatedText: '（间奏）',
+          },
+          {
+            id: 'codex-first',
+            time: 1.25,
+            originalText: 'First line',
+            translatedText: '',
+          },
+        ],
+        sources: [],
+      })),
+    };
+    const service = new BilingualLyricsService(database, library(), kid3(), translator);
+
+    const task = await service.start(track.id);
+
+    expect(task).toMatchObject({
+      status: 'review',
+      tagWriteStatus: 'not_started',
+      lines: [
+        {
+          id: 'codex-second',
+          time: 4.25,
+          originalText: 'Second line, revised by Codex',
+          translatedText: '第二行，由 Codex 调整',
+        },
+        { id: 'codex-blank', time: 2, originalText: '', translatedText: '（间奏）' },
+        { id: 'codex-first', time: 1.25, originalText: 'First line', translatedText: '' },
+      ],
+    });
+    database.close();
+  });
+
+  it('persists and restores a manual terminal-state override', async () => {
+    const { database, track } = await createFixture();
+    const translator: BilingualLyricsTranslator = {
+      translate: vi.fn(async (input) => ({
+        summary: '结果',
+        lines: input.lines.map((line) => ({
+          id: line.id,
+          time: line.time,
+          originalText: line.text,
+          translatedText: '译文',
+        })),
+        sources: [],
+      })),
+    };
+    const service = new BilingualLyricsService(database, library(), kid3(), translator);
+    await service.start(track.id);
+
+    const resolved = service.setStatusOverride(track.id, 'resolved');
+    expect(resolved).toMatchObject({ status: 'review', statusOverride: 'resolved' });
+    expect(database.getBilingualLyricsTask(track.id)?.statusOverride).toBe('resolved');
+
+    const automatic = service.setStatusOverride(track.id, null);
+    expect(automatic.status).toBe('review');
+    expect(automatic.statusOverride).toBeUndefined();
+    expect(database.getBilingualLyricsTask(track.id)?.statusOverride).toBeUndefined();
+    database.close();
+  });
+
   it('discards a result when the source lyrics change during translation', async () => {
     const { database, lrcPath, track } = await createFixture();
     const translator: BilingualLyricsTranslator = {
@@ -103,7 +182,12 @@ describe('BilingualLyricsService', () => {
         await writeFile(lrcPath, '[00:01.00]Changed line\n');
         return {
           summary: '结果',
-          lines: input.lines.map((line) => ({ id: line.id, translatedText: '翻译' })),
+          lines: input.lines.map((line) => ({
+            id: line.id,
+            time: line.time,
+            originalText: line.text,
+            translatedText: '翻译',
+          })),
           sources: [{ title: 'Source', url: 'https://example.com/source' }],
         };
       }),
@@ -125,6 +209,8 @@ describe('BilingualLyricsService', () => {
         summary: '双语结果',
         lines: translationInput.lines.map((line, index) => ({
           id: line.id,
+          time: line.time,
+          originalText: line.text,
           translatedText: index === 0 ? '第一行' : '第二行',
         })),
         sources: [],
@@ -165,7 +251,12 @@ describe('BilingualLyricsService', () => {
     const translator: BilingualLyricsTranslator = {
       translate: vi.fn(async (translationInput) => ({
         summary: '双语结果',
-        lines: translationInput.lines.map((line) => ({ id: line.id, translatedText: '译文' })),
+        lines: translationInput.lines.map((line) => ({
+          id: line.id,
+          time: line.time,
+          originalText: line.text,
+          translatedText: '译文',
+        })),
         sources: [],
       })),
     };
@@ -193,7 +284,12 @@ describe('BilingualLyricsService', () => {
     const translator: BilingualLyricsTranslator = {
       translate: vi.fn(async (translationInput) => ({
         summary: '双语结果',
-        lines: translationInput.lines.map((line) => ({ id: line.id, translatedText: '译文' })),
+        lines: translationInput.lines.map((line) => ({
+          id: line.id,
+          time: line.time,
+          originalText: line.text,
+          translatedText: '译文',
+        })),
         sources: [],
       })),
     };

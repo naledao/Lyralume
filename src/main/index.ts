@@ -6,6 +6,7 @@ import {
   BrowserWindow,
   ipcMain,
   net,
+  nativeImage,
   protocol,
   session,
   shell,
@@ -25,6 +26,7 @@ import {
 } from './lyrics/codex-bilingual-translator.js';
 import { Kid3Adapter } from './lyrics/kid3.js';
 import { LyricsOffsetService } from './lyrics/lyrics-offset-service.js';
+import { SimplifiedLyricsService } from './lyrics/simplified-lyrics-service.js';
 import { LrclibClient } from './lyrics/lrclib.js';
 import { OnlineLyricsService } from './lyrics/online-lyrics-service.js';
 import { configureLogging, logger } from './logging.js';
@@ -33,6 +35,14 @@ import { TrackWriteCoordinator } from './track-write-coordinator.js';
 import { setImmersiveFullscreenPriority } from './immersive-fullscreen.js';
 import { UtilityVisualAnalysisRunner } from './visual-analysis/runner.js';
 import { VisualAnalysisService } from './visual-analysis/service.js';
+import { TaskNotificationService } from './task-notifications.js';
+import { shouldUsePackagedResources } from './runtime-mode.js';
+import { AppSettingsService } from './settings/app-settings.js';
+import { ElectronCredentialProtector } from './settings/credential-protector.js';
+import { GlobalNetworkProxy } from './settings/network-proxy.js';
+import { resolveMusicDownloadRuntime } from './music-download/runtime.js';
+import { MusicDownloadService } from './music-download/service.js';
+import { RemoteSyncService } from './remote-sync/service.js';
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 let mainWindow: BrowserWindow | null = null;
@@ -42,6 +52,9 @@ let onlineLyrics: OnlineLyricsService | null = null;
 let localLyrics: LocalLyricsService | null = null;
 let bilingualLyrics: BilingualLyricsService | null = null;
 let visualAnalysis: VisualAnalysisService | null = null;
+let musicDownloads: MusicDownloadService | null = null;
+let remoteSync: RemoteSyncService | null = null;
+let appSettings: AppSettingsService | null = null;
 let playbackFlushRequestSequence = 0;
 let quitPlaybackFlushed = false;
 let shutdownStarted = false;
@@ -99,6 +112,8 @@ if (process.env.LYRALUME_E2E_USER_DATA) {
 
 configureLogging();
 
+if (process.platform === 'win32') app.setAppUserModelId('com.lyralume.player');
+
 function isTrustedNavigation(targetUrl: string): boolean {
   const devServer = process.env.VITE_DEV_SERVER_URL;
   if (devServer && targetUrl.startsWith(devServer)) return true;
@@ -115,13 +130,25 @@ function secureWebContents(webContents: WebContents): void {
   });
 }
 
+function resolveAppIconPath(): string {
+  const fileName = process.platform === 'win32'
+    ? 'lyralume-icon.ico'
+    : 'lyralume-icon-256.png';
+  return shouldUsePackagedResources(app.isPackaged)
+    ? path.join(process.resourcesPath, 'branding', fileName)
+    : path.join(currentDirectory, '../../assets/branding', fileName);
+}
+
 function createWindow(): BrowserWindow {
+  const iconPath = resolveAppIconPath();
+  const appIcon = nativeImage.createFromPath(iconPath);
   const window = new BrowserWindow({
     width: 1440,
     height: 900,
     minWidth: 1080,
     minHeight: 680,
     backgroundColor: '#090c12',
+    icon: appIcon,
     show: false,
     title: 'Lyralume',
     titleBarStyle: 'hidden',
@@ -138,6 +165,14 @@ function createWindow(): BrowserWindow {
       webSecurity: true,
     },
   });
+  if (process.platform === 'win32') {
+    window.setIcon(appIcon);
+    window.setAppDetails({
+      appId: 'com.lyralume.player',
+      appIconPath: iconPath,
+      appIconIndex: 0,
+    });
+  }
   secureWebContents(window.webContents);
   const notifyFullscreenChanged = (fullscreen: boolean): void => {
     if (!window.webContents.isDestroyed()) {
@@ -215,6 +250,22 @@ function registerMediaProtocol(): void {
 
 async function start(): Promise<void> {
   const userDataPath = app.getPath('userData');
+  const usePackagedResources = shouldUsePackagedResources(app.isPackaged);
+  appSettings = new AppSettingsService(
+    userDataPath,
+    path.join(app.getPath('downloads'), 'Lyralume'),
+    new GlobalNetworkProxy(session.defaultSession),
+    new ElectronCredentialProtector(),
+  );
+  await appSettings.initialize();
+  if (process.env.VITE_DEV_SERVER_URL) {
+    try {
+      await session.defaultSession.clearCache();
+      logger.info('Cleared Electron HTTP cache before loading the development server');
+    } catch (error) {
+      logger.warn('Unable to clear Electron HTTP cache before development startup', error);
+    }
+  }
   database = new LibraryDatabase(path.join(userDataPath, 'library.db'));
   const kid3 = new Kid3Adapter(path.join(userDataPath, 'cache', 'kid3'));
   const trackWrites = new TrackWriteCoordinator();
@@ -222,7 +273,7 @@ async function start(): Promise<void> {
   onlineLyrics = new OnlineLyricsService(
     database,
     library,
-    new LrclibClient(),
+    new LrclibClient(session.defaultSession.fetch.bind(session.defaultSession) as typeof fetch),
     kid3,
     trackWrites,
   );
@@ -248,12 +299,15 @@ async function start(): Promise<void> {
     library,
     kid3,
     new CodexSdkBilingualTranslator(new CodexSdkStructuredRunner({
-      packagedResourcesPath: app.isPackaged ? process.resourcesPath : undefined,
+      packagedResourcesPath: usePackagedResources ? process.resourcesPath : undefined,
     })),
     trackWrites,
   );
   const lyricsOffset = new LyricsOffsetService(database, library, kid3, trackWrites);
-  const bundledFfmpeg = path.join(process.resourcesPath, 'tools', 'ffmpeg', 'ffmpeg.exe');
+  const simplifiedLyrics = new SimplifiedLyricsService(database, library, kid3, trackWrites);
+  const bundledFfmpeg = usePackagedResources
+    ? path.join(process.resourcesPath, 'tools', 'ffmpeg', 'ffmpeg.exe')
+    : path.join(app.getAppPath(), 'tools', 'ffmpeg', 'ffmpeg.exe');
   visualAnalysis = new VisualAnalysisService(
     database,
     new UtilityVisualAnalysisRunner(
@@ -263,7 +317,22 @@ async function start(): Promise<void> {
         : process.env.LYRALUME_FFMPEG_PATH || 'ffmpeg',
     ),
   );
+  const musicRuntime = resolveMusicDownloadRuntime({
+    appPath: app.getAppPath(),
+    resourcesPath: process.resourcesPath,
+    packaged: usePackagedResources,
+  });
+  musicDownloads = new MusicDownloadService(
+    appSettings,
+    musicRuntime,
+    path.join(userDataPath, 'cache', 'music-downloads'),
+    (filePath) => {
+      if (database?.ignoreFileForAutomaticScan(filePath)) library?.refreshSnapshot();
+    },
+  );
+  remoteSync = new RemoteSyncService(database, appSettings, trackWrites);
   registerMediaProtocol();
+  const taskNotifications = new TaskNotificationService(database, () => mainWindow);
   registerIpcHandlers(
     () => mainWindow,
     database,
@@ -272,11 +341,18 @@ async function start(): Promise<void> {
     localLyrics,
     bilingualLyrics,
     lyricsOffset,
+    simplifiedLyrics,
     visualAnalysis,
+    taskNotifications,
+    appSettings,
+    musicDownloads,
+    remoteSync,
   );
   mainWindow = createWindow();
   await library.initializeWatchers();
-  visualAnalysis.scheduleLibrary(library.getSnapshot().tracks);
+  const initialLibrary = library.getSnapshot();
+  visualAnalysis.scheduleLibrary(initialLibrary.tracks);
+  await remoteSync.initialize(initialLibrary);
 
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
     callback({ responseHeaders: details.responseHeaders });
@@ -328,17 +404,24 @@ app.on('before-quit', (event) => {
   const activeLocalLyrics = localLyrics;
   const activeBilingualLyrics = bilingualLyrics;
   const activeVisualAnalysis = visualAnalysis;
+  const activeMusicDownloads = musicDownloads;
+  const activeRemoteSync = remoteSync;
   library = null;
   database = null;
   onlineLyrics = null;
   localLyrics = null;
   bilingualLyrics = null;
   visualAnalysis = null;
+  musicDownloads = null;
+  remoteSync = null;
+  appSettings = null;
   void Promise.all([
     activeLibrary.close(),
     activeLocalLyrics?.close(),
     activeBilingualLyrics?.close(),
     activeVisualAnalysis?.close(),
+    activeMusicDownloads?.close(),
+    activeRemoteSync?.close(),
   ]).finally(() => {
     removeIpcHandlers();
     activeDatabase.close();

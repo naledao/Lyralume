@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -8,6 +8,7 @@ import {
   Kid3Adapter,
   Kid3Error,
   type ProcessRunner,
+  type ArtworkReader,
   type SyltReader,
   type TrackMetadataReader,
 } from './kid3';
@@ -45,6 +46,34 @@ function syncedLyrics(...lines: Array<[number, string]>): SyltReader {
 }
 
 describe('Kid3Adapter', () => {
+  it('writes a front-cover picture to tag 2 and verifies its readback', async () => {
+    const { directory, audioPath } = await fixture();
+    const runner = successfulRunner();
+    const artworkPath = path.join(directory, "cover's image.png");
+    await writeFile(artworkPath, 'image');
+    const artworkReader: ArtworkReader = vi.fn(async () => ({
+      format: 'image/png',
+      data: new Uint8Array(Buffer.from('image')),
+    }));
+    const adapter = new Kid3Adapter(
+      path.join(directory, 'cache'),
+      runner,
+      syncedLyrics(),
+      'kid3-cli',
+      vi.fn(async () => ({})),
+      artworkReader,
+    );
+
+    const result = await adapter.writeArtworkAndVerify(audioPath, artworkPath);
+
+    expect(runner).toHaveBeenCalledWith('kid3-cli', [
+      '-c', `set picture:'${artworkPath.replace(/\\/g, '/').replace(/'/g, "\\'")}' 'Front Cover' 2`,
+      audioPath,
+    ]);
+    expect(artworkReader).toHaveBeenCalledWith(audioPath);
+    expect(result).toEqual({ mime: 'image/png', data: Buffer.from('image') });
+  });
+
   it('writes title, artist and album to tag 2 and accepts matching readback', async () => {
     const { directory, audioPath } = await fixture();
     const runner = successfulRunner();
@@ -178,6 +207,72 @@ describe('Kid3Adapter', () => {
       '[00:01.00]First\n[00:02.00]Second\n',
     );
 
+    expect(await readdir(cachePath)).toEqual([]);
+  });
+
+  it('converts timestamped USLT text to SYLT and removes the original text frame', async () => {
+    const { directory, audioPath } = await fixture();
+    const cachePath = path.join(directory, 'cache');
+    const runner = successfulRunner();
+    const reader = syncedLyrics([1000, 'First'], [2000, 'Second']);
+    const adapter = new Kid3Adapter(cachePath, runner, reader);
+
+    await adapter.convertUnsynchronizedLyricsAndVerify(
+      audioPath,
+      '[00:01.00]First\n[00:02.00]Second\n',
+    );
+
+    expect(runner).toHaveBeenLastCalledWith(expect.any(String), [
+      '-c', "set USLT '' 2", audioPath,
+    ]);
+    expect(reader).toHaveBeenCalledTimes(2);
+    expect(await readdir(cachePath)).toEqual([]);
+  });
+
+  it('rejects USLT text without timestamps before changing the MP3', async () => {
+    const { directory, audioPath } = await fixture();
+    const runner = successfulRunner();
+    const adapter = new Kid3Adapter(path.join(directory, 'cache'), runner, syncedLyrics());
+
+    await expect(adapter.convertUnsynchronizedLyricsAndVerify(
+      audioPath,
+      'Plain lyrics without timestamps',
+    )).rejects.toMatchObject<Kid3Error>({ kind: 'verification' });
+
+    expect(runner).not.toHaveBeenCalled();
+    expect(await readFile(audioPath, 'utf8')).toBe('audio');
+  });
+
+  it('restores the original MP3 when removing USLT cannot be verified', async () => {
+    const { directory, audioPath } = await fixture();
+    const cachePath = path.join(directory, 'cache');
+    const runner: ProcessRunner = vi.fn(async (_executable, args) => {
+      if (args[1] === "set USLT '' 2") await writeFile(audioPath, 'modified audio');
+      return {
+        stdout: args[1] === 'get "SYLT.Text Encoding" 2' ? '1\n' : '',
+        stderr: '',
+      };
+    });
+    const reader: SyltReader = vi.fn()
+      .mockResolvedValueOnce([{
+        descriptor: 'Lyralume / Imported USLT',
+        syncText: [{ timestamp: 1000, text: 'First' }],
+      }])
+      .mockResolvedValueOnce([
+        {
+          descriptor: 'Lyralume / Imported USLT',
+          syncText: [{ timestamp: 1000, text: 'First' }],
+        },
+        { text: '[00:01.00]First' },
+      ]);
+    const adapter = new Kid3Adapter(cachePath, runner, reader);
+
+    await expect(adapter.convertUnsynchronizedLyricsAndVerify(
+      audioPath,
+      '[00:01.00]First\n',
+    )).rejects.toMatchObject<Kid3Error>({ kind: 'verification' });
+
+    expect(await readFile(audioPath, 'utf8')).toBe('audio');
     expect(await readdir(cachePath)).toEqual([]);
   });
 

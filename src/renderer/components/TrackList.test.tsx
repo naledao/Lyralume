@@ -25,6 +25,7 @@ const api = {
     chooseDirectory: vi.fn(),
     importDropped: vi.fn(),
     updateMetadata: vi.fn(),
+    chooseArtwork: vi.fn(),
     removeTrack: vi.fn(),
     rescan: vi.fn(),
     onChanged: vi.fn(() => () => undefined),
@@ -42,7 +43,10 @@ const api = {
   },
   lyrics: {
     load: vi.fn(),
+    getTasks: vi.fn(),
+    setTaskStatusOverride: vi.fn(),
     writeAdjustedTiming: vi.fn(),
+    writeSimplified: vi.fn(),
     getOnlineTask: vi.fn(),
     searchOnline: vi.fn(),
     saveOnline: vi.fn(),
@@ -65,9 +69,36 @@ const api = {
     writeBilingualTag: vi.fn(),
     onBilingualTaskChanged: vi.fn(() => () => undefined),
   },
+  settings: {
+    get: vi.fn(),
+    chooseDownloadDirectory: vi.fn(),
+    updateProxy: vi.fn(),
+    updateMinio: vi.fn(),
+    clearMinio: vi.fn(),
+    chooseCookieFile: vi.fn(),
+    clearCookie: vi.fn(),
+  },
+  remote: {
+    getSnapshot: vi.fn(),
+    refresh: vi.fn(),
+    testConnection: vi.fn(),
+    syncAll: vi.fn(),
+    syncTrack: vi.fn(),
+    onChanged: vi.fn(() => () => undefined),
+  },
+  music: {
+    getRuntime: vi.fn(),
+    search: vi.fn(),
+    getTasks: vi.fn(),
+    startDownload: vi.fn(),
+    cancelDownload: vi.fn(),
+    openDownloadDirectory: vi.fn(),
+    onTaskChanged: vi.fn(() => () => undefined),
+  },
   app: {
     getVersion: vi.fn(),
     setFullscreen: vi.fn(),
+    onOpenTask: vi.fn(() => () => undefined),
     onFullscreenChanged: vi.fn(() => () => undefined),
     onPlaybackFlushRequested: vi.fn(() => () => undefined),
     completePlaybackFlush: vi.fn(),
@@ -91,6 +122,23 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('TrackList metadata editing', () => {
+  it('chooses and publishes a new MP3 cover from the track action', async () => {
+    const mp3 = { ...item, fileName: 'Editable Track.mp3' };
+    const updated = {
+      ...mp3,
+      hasArtwork: true,
+      artworkUrl: `${mp3.playbackUrl.replace('/track/', '/artwork/')}?v=2`,
+    };
+    api.library.chooseArtwork.mockResolvedValue({ tracks: [updated], roots: [] });
+    render(<TrackList tracks={[mp3]} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '添加 Editable Track 的 MP3 封面' }));
+
+    await waitFor(() => expect(api.library.chooseArtwork).toHaveBeenCalledWith(mp3.id));
+    expect(useAppStore.getState().tracks[0]).toMatchObject({ hasArtwork: true });
+    expect(useAppStore.getState().libraryMessage).toContain('完成回读验证');
+  });
+
   it('shows the fixed language tags and saves a selection', async () => {
     api.library.updateMetadata.mockResolvedValue({
       tracks: [{ ...item, language: 'zho' }],

@@ -6,6 +6,7 @@ import type {
   BilingualLyricsTaskError,
   BilingualLyricsTaskStatus,
   BilingualLyricsTranslationStyle,
+  LyricsTaskStatusOverride,
 } from '../../shared/contracts.js';
 import { parseLrc } from '../../shared/lrc.js';
 import { LibraryDatabase } from '../library/database.js';
@@ -159,6 +160,25 @@ export class BilingualLyricsService {
     return normalized;
   }
 
+  getTasks(): BilingualLyricsTask[] {
+    return this.database.getBilingualLyricsTasks()
+      .map((task) => this.getTask(task.trackId))
+      .filter((task) => task.status !== 'idle')
+      .sort((left, right) => right.updatedAt - left.updatedAt);
+  }
+
+  setStatusOverride(
+    trackId: string,
+    statusOverride: LyricsTaskStatusOverride | null,
+  ): BilingualLyricsTask {
+    const task = this.getTask(trackId);
+    if (task.status === 'idle') throw new Error('当前歌曲还没有中文译配任务');
+    if (this.activeTasks.has(trackId) || ACTIVE_STATUSES.has(task.status) || task.tagWriteStatus === 'writing') {
+      throw new Error('运行中的任务不能强制改状态，请先取消任务');
+    }
+    return this.update(task, { statusOverride: statusOverride ?? undefined });
+  }
+
   async start(
     trackId: string,
     options: BilingualLyricsStartOptions = {},
@@ -306,17 +326,16 @@ export class BilingualLyricsService {
         });
       }
 
-      const translatedById = new Map(result.lines.map((line) => [line.id, line.translatedText]));
       const current = this.database.getBilingualLyricsTask(initialTask.trackId) ?? initialTask;
       return this.update(current, {
         status: 'review',
         progress: 1,
         message: '中文双语草稿已生成，等待人工审阅',
-        lines: inputLines.map((line) => ({
+        lines: result.lines.map((line) => ({
           id: line.id,
           time: line.time,
-          originalText: line.text,
-          translatedText: translatedById.get(line.id) ?? '',
+          originalText: line.originalText,
+          translatedText: line.translatedText,
         })),
         summary: result.summary,
         sources: result.sources,

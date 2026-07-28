@@ -30,6 +30,7 @@ export function LyricsPanel() {
   const [bilingualMode, setBilingualMode] = useState(false);
   const track = useAppStore(currentTrackFromState);
   const currentTrackId = useAppStore((state) => state.currentTrackId);
+  const taskDetailRequest = useAppStore((state) => state.taskDetailRequest);
   const status = useAppStore((state) => state.lyricsStatus);
   const lines = useAppStore((state) => state.lyricLines);
   const currentTime = useAppStore((state) => state.currentTime);
@@ -37,6 +38,7 @@ export function LyricsPanel() {
   const lyricsSource = useAppStore((state) => state.lyricsSource);
   const lyricsRevision = useAppStore((state) => state.lyricsRevision);
   const timingWriteBusy = useAppStore((state) => state.lyricTimingWriteBusy);
+  const simplifiedWriteBusy = useAppStore((state) => state.simplifiedLyricsWriteBusy);
   const timingWriteError = useAppStore((state) => state.lyricTimingWriteError);
   const timingWriteMessage = useAppStore((state) => state.lyricTimingWriteMessage);
   const error = useAppStore((state) => state.lyricsError);
@@ -74,6 +76,7 @@ export function LyricsPanel() {
   const startBilingual = useAppStore((state) => state.startBilingualLyrics);
   const cancelBilingual = useAppStore((state) => state.cancelBilingualLyrics);
   const writeBilingualTag = useAppStore((state) => state.writeBilingualLyricsTag);
+  const writeSimplifiedLyrics = useAppStore((state) => state.writeSimplifiedLyrics);
   const writeAdjustedTiming = useAppStore((state) => state.writeAdjustedLyricTiming);
   const selectTrack = useAppStore((state) => state.selectTrack);
   const rememberedTask = useMemo(() => (
@@ -98,6 +101,14 @@ export function LyricsPanel() {
     setOnlineMode(false);
     setBilingualMode(false);
   }, [currentTrackId]);
+
+  useEffect(() => {
+    if (!taskDetailRequest || taskDetailRequest.trackId !== currentTrackId) return;
+    setOnlineMode(false);
+    setLocalMode(taskDetailRequest.kind === 'local');
+    setBilingualMode(taskDetailRequest.kind === 'bilingual');
+    if (taskDetailRequest.kind === 'local') void loadLocalModelSettings();
+  }, [currentTrackId, loadLocalModelSettings, taskDetailRequest]);
 
   useEffect(() => {
     if (onlineMode || localMode || bilingualMode) return;
@@ -202,11 +213,27 @@ export function LyricsPanel() {
     await withReleasedTrackSource(track, writeAdjustedTiming);
   };
 
+  const handleWriteSimplifiedLyrics = async (): Promise<void> => {
+    if (!track) return;
+    const offsetSummary = offsetMs === 0
+      ? '保留当前时间轴'
+      : `同时固化当前 ${offsetMs > 0 ? '+' : ''}${(offsetMs / 1000).toFixed(1)}s 时间偏移`;
+    if (!window.confirm(
+      `确认将当前同步歌词转为简体，${offsetSummary}，并直接写入《${track.title}》原 MP3？\n\n歌曲旁的外置 LRC 不会被修改。`,
+    )) return;
+    await withReleasedTrackSource(track, writeSimplifiedLyrics);
+  };
+
   const timingAlreadyEmbedded = lyricsSource === 'embedded' && offsetMs === 0;
   const canWriteAdjustedTiming = status === 'loaded'
     && Boolean(lyricsRevision)
     && !timingWriteBusy
     && !timingAlreadyEmbedded;
+  const isMp3 = track?.fileName.toLocaleLowerCase().endsWith('.mp3') ?? false;
+  const canWriteSimplified = status === 'loaded'
+    && Boolean(lyricsRevision)
+    && isMp3
+    && !simplifiedWriteBusy;
 
   return (
     <aside className="lyrics-panel">
@@ -240,6 +267,18 @@ export function LyricsPanel() {
           )}
           {!onlineMode && !localMode && !bilingualMode && status === 'loaded' && (
             <button type="button" onClick={showBilingualDraft}>中文译配</button>
+          )}
+          {!onlineMode && !localMode && !bilingualMode && status === 'loaded' && (
+            <button
+              type="button"
+              disabled={!canWriteSimplified}
+              title={isMp3
+                ? '使用 OpenCC 转为简体，并写入原 MP3 的同步歌词标签'
+                : '简体歌词写入目前仅支持 MP3 文件'}
+              onClick={() => void handleWriteSimplifiedLyrics()}
+            >
+              {simplifiedWriteBusy ? '简体写入中…' : '转简体并写入'}
+            </button>
           )}
           {onlineMode && <span className="status-pill"><i />LRCLIB</span>}
           {localMode && <span className="status-pill"><i />LOCAL AI</span>}

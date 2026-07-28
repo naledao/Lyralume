@@ -9,6 +9,8 @@ import type {
   PlaybackCheckpoint,
   PlaybackProgress,
   PlaybackStateSnapshot,
+  RemoteCatalogEntry,
+  RemoteSyncRecord,
   Track,
   TrackMetadataUpdate,
 } from '../../shared/contracts.js';
@@ -194,6 +196,27 @@ export class LibraryDatabase {
 
       CREATE INDEX IF NOT EXISTS idx_track_visual_analysis_status
         ON track_visual_analysis(status, updated_at);
+
+      CREATE TABLE IF NOT EXISTS remote_sync_records (
+        track_id TEXT PRIMARY KEY,
+        sync_id TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_remote_sync_records_status
+        ON remote_sync_records(status, updated_at);
+
+      CREATE TABLE IF NOT EXISTS remote_music_cache (
+        object_name TEXT PRIMARY KEY,
+        sync_id TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        refreshed_at INTEGER NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_remote_music_cache_sync_id
+        ON remote_music_cache(sync_id);
     `);
 
     const trackColumns = new Set(
@@ -346,7 +369,9 @@ export class LibraryDatabase {
       hasLyrics: Boolean(row.lrc_path || row.has_embedded_lyrics),
       hasArtwork: Boolean(row.artwork_mime),
       playbackUrl: `lyralume-media://track/${row.id}`,
-      artworkUrl: row.artwork_mime ? `lyralume-media://artwork/${row.id}` : undefined,
+      artworkUrl: row.artwork_mime
+        ? `lyralume-media://artwork/${row.id}?v=${Math.round(row.modified_at)}`
+        : undefined,
     };
   }
 
@@ -388,6 +413,21 @@ export class LibraryDatabase {
       fileSize: row.file_size,
       modifiedAt: row.modified_at,
     };
+  }
+
+  setTrackArtwork(
+    id: string,
+    artworkMime: string,
+    artwork: Buffer,
+    fileSize: number,
+    modifiedAt: number,
+  ): boolean {
+    const result = this.database.prepare(`
+      UPDATE tracks
+      SET artwork_mime = ?, artwork = ?, file_size = ?, modified_at = ?, updated_at = ?
+      WHERE id = ?
+    `).run(artworkMime, artwork, fileSize, modifiedAt, Date.now(), id);
+    return result.changes > 0;
   }
 
   createPendingVisualAnalysis(
@@ -589,6 +629,30 @@ export class LibraryDatabase {
     };
   }
 
+  ignoreFileForAutomaticScan(filePath: string): boolean {
+    const normalizedPath = path.resolve(filePath);
+    const containingRoot = this.getRoots()
+      .map((root) => root.path)
+      .sort((left, right) => right.length - left.length)
+      .find((rootPath) => {
+        const relative = path.relative(path.resolve(rootPath), normalizedPath);
+        return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+      });
+    if (!containingRoot) return false;
+
+    this.database.transaction(() => {
+      this.database.prepare(`
+        INSERT INTO ignored_library_files(file_path, root_path, ignored_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(file_path) DO UPDATE SET
+          root_path = excluded.root_path,
+          ignored_at = excluded.ignored_at
+      `).run(normalizedPath, containingRoot, Date.now());
+      this.database.prepare('DELETE FROM tracks WHERE file_path = ?').run(normalizedPath);
+    })();
+    return true;
+  }
+
   clearIgnoredForImport(importPath: string): void {
     this.database
       .prepare('DELETE FROM ignored_library_files WHERE file_path = ? OR root_path = ?')
@@ -632,6 +696,19 @@ export class LibraryDatabase {
     }
   }
 
+  getLocalLyricsTasks(): LocalLyricsTask[] {
+    const rows = this.database
+      .prepare('SELECT payload_json FROM local_lyrics_tasks ORDER BY updated_at DESC')
+      .all() as Array<{ payload_json: string }>;
+    return rows.flatMap((row) => {
+      try {
+        return [JSON.parse(row.payload_json) as LocalLyricsTask];
+      } catch {
+        return [];
+      }
+    });
+  }
+
   saveLocalLyricsTask(task: LocalLyricsTask): void {
     this.database
       .prepare(
@@ -658,6 +735,19 @@ export class LibraryDatabase {
     }
   }
 
+  getBilingualLyricsTasks(): BilingualLyricsTask[] {
+    const rows = this.database
+      .prepare('SELECT payload_json FROM bilingual_lyrics_tasks ORDER BY updated_at DESC')
+      .all() as Array<{ payload_json: string }>;
+    return rows.flatMap((row) => {
+      try {
+        return [JSON.parse(row.payload_json) as BilingualLyricsTask];
+      } catch {
+        return [];
+      }
+    });
+  }
+
   saveBilingualLyricsTask(task: BilingualLyricsTask): void {
     this.database
       .prepare(
@@ -670,6 +760,90 @@ export class LibraryDatabase {
            updated_at = excluded.updated_at`,
       )
       .run(task.trackId, task.id, task.status, JSON.stringify(task), task.updatedAt);
+  }
+
+  getRemoteSyncRecord(trackId: string): RemoteSyncRecord | undefined {
+    const row = this.database
+      .prepare('SELECT payload_json FROM remote_sync_records WHERE track_id = ?')
+      .get(trackId) as { payload_json: string } | undefined;
+    if (!row) return undefined;
+    try {
+      return JSON.parse(row.payload_json) as RemoteSyncRecord;
+    } catch {
+      return undefined;
+    }
+  }
+
+  getRemoteSyncRecords(): RemoteSyncRecord[] {
+    const rows = this.database
+      .prepare('SELECT payload_json FROM remote_sync_records ORDER BY updated_at DESC')
+      .all() as Array<{ payload_json: string }>;
+    return rows.flatMap((row) => {
+      try {
+        return [JSON.parse(row.payload_json) as RemoteSyncRecord];
+      } catch {
+        return [];
+      }
+    });
+  }
+
+  saveRemoteSyncRecord(record: RemoteSyncRecord): void {
+    this.database.prepare(`
+      INSERT INTO remote_sync_records(track_id, sync_id, status, payload_json, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(track_id) DO UPDATE SET
+        sync_id = excluded.sync_id,
+        status = excluded.status,
+        payload_json = excluded.payload_json,
+        updated_at = excluded.updated_at
+    `).run(
+      record.trackId,
+      record.syncId,
+      record.status,
+      JSON.stringify(record),
+      record.updatedAt,
+    );
+  }
+
+  deleteRemoteSyncRecord(trackId: string): void {
+    this.database.prepare('DELETE FROM remote_sync_records WHERE track_id = ?').run(trackId);
+  }
+
+  getRemoteMusicCache(): RemoteCatalogEntry[] {
+    const rows = this.database
+      .prepare('SELECT payload_json FROM remote_music_cache ORDER BY object_name ASC')
+      .all() as Array<{ payload_json: string }>;
+    return rows.flatMap((row) => {
+      try {
+        return [JSON.parse(row.payload_json) as RemoteCatalogEntry];
+      } catch {
+        return [];
+      }
+    });
+  }
+
+  replaceRemoteMusicCache(entries: RemoteCatalogEntry[], refreshedAt: number): void {
+    const insert = this.database.prepare(`
+      INSERT INTO remote_music_cache(object_name, sync_id, payload_json, refreshed_at)
+      VALUES (?, ?, ?, ?)
+    `);
+    this.database.transaction(() => {
+      this.database.prepare('DELETE FROM remote_music_cache').run();
+      for (const entry of entries) {
+        insert.run(entry.objectName, entry.syncId, JSON.stringify(entry), refreshedAt);
+      }
+    })();
+  }
+
+  saveRemoteMusicCacheEntry(entry: RemoteCatalogEntry, refreshedAt: number): void {
+    this.database.prepare(`
+      INSERT INTO remote_music_cache(object_name, sync_id, payload_json, refreshed_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(object_name) DO UPDATE SET
+        sync_id = excluded.sync_id,
+        payload_json = excluded.payload_json,
+        refreshed_at = excluded.refreshed_at
+    `).run(entry.objectName, entry.syncId, JSON.stringify(entry), refreshedAt);
   }
 
   getArtwork(id: string): StoredArtwork | undefined {

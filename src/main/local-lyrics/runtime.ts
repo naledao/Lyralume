@@ -1,6 +1,8 @@
 import path from 'node:path';
 import { app } from 'electron';
 import type { LocalLyricsRuntimeOptions } from './local-lyrics-service.js';
+import { shouldUsePackagedResources } from '../runtime-mode.js';
+import { resolveLocalLyricsPythonExecutables } from './python-environment.js';
 
 export interface ResolvedLocalLyricsRuntime {
   options: LocalLyricsRuntimeOptions;
@@ -11,10 +13,10 @@ export interface ResolvedLocalLyricsRuntime {
 }
 
 export function resolveLocalLyricsRuntime(userDataPath: string): ResolvedLocalLyricsRuntime {
-  const workerRoot = app.isPackaged
+  const workerRoot = shouldUsePackagedResources(app.isPackaged)
     ? path.join(process.resourcesPath, 'workers')
     : path.join(app.getAppPath(), 'workers');
-  const aiRoot = path.join(userDataPath, 'ai');
+  const python = resolveLocalLyricsPythonExecutables();
   return {
     options: {
       cacheRoot: path.join(userDataPath, 'cache', 'lyrics-tasks'),
@@ -22,10 +24,8 @@ export function resolveLocalLyricsRuntime(userDataPath: string): ResolvedLocalLy
       modelSettingsPath: path.join(userDataPath, 'models', 'local-lyrics-settings.json'),
       defaultDevice: process.env.LYRALUME_AI_DEVICE === 'cpu' ? 'cpu' : 'cuda',
     },
-    uvrPython: process.env.LYRALUME_UVR_PYTHON
-      ?? path.join(aiRoot, 'uvr', '.venv', 'Scripts', 'python.exe'),
-    whisperPython: process.env.LYRALUME_WHISPERX_PYTHON
-      ?? path.join(aiRoot, 'whisperx', '.venv', 'Scripts', 'python.exe'),
+    uvrPython: python.uvrPython,
+    whisperPython: python.whisperPython,
     uvrScript: path.join(workerRoot, 'uvr', 'worker.py'),
     whisperScript: path.join(workerRoot, 'whisperx', 'worker.py'),
   };

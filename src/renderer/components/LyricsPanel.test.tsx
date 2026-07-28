@@ -163,6 +163,27 @@ describe('LyricsPanel Codex progress', () => {
     expect(screen.getByText('调整后写入同步歌词标签')).toBeVisible();
   });
 
+  it('offers a confirmed simplified-lyrics write for an MP3 with loaded lyrics', () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    useAppStore.setState({
+      tracks: [{ ...track, hasLyrics: true }],
+      currentTrackId: track.id,
+      lyricsStatus: 'loaded',
+      lyricLines: [{ id: '1', time: 2, text: '還不能回來' }],
+      lyricOffsetMs: 0,
+      lyricsSource: 'lrc',
+      lyricsRevision: '9'.repeat(64),
+      simplifiedLyricsWriteBusy: false,
+      localLyricsProofreadProgress: {},
+    });
+
+    render(<LyricsPanel />);
+    fireEvent.click(screen.getByRole('button', { name: '转简体并写入' }));
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('直接写入《水星记（待补全）》原 MP3'));
+    confirm.mockRestore();
+  });
+
   it('renders same-timestamp bilingual rows as one active cue', () => {
     useAppStore.setState({
       tracks: [{ ...track, hasLyrics: true }],

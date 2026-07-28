@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { app, dialog, ipcMain, type BrowserWindow, type OpenDialogOptions } from 'electron';
+import { mkdir } from 'node:fs/promises';
+import { app, dialog, ipcMain, shell, type BrowserWindow, type OpenDialogOptions } from 'electron';
 import {
   IPC_CHANNELS,
   isTrackLanguage,
@@ -7,13 +8,19 @@ import {
   type LocalLyricsDraftUpdate,
   type LocalLyricsStartOptions,
   type LyricsDocument,
+  type LyricsTaskStatusOverride,
+  type LyricsTaskTarget,
+  type MinioSettingsUpdate,
+  type MusicDownloadRequest,
   type PlaybackCheckpoint,
+  type ProxySettingsUpdate,
   type TrackMetadataUpdate,
 } from '../shared/contracts.js';
 import { LibraryDatabase } from './library/database.js';
 import { LibraryService } from './library/service.js';
 import { BilingualLyricsService } from './lyrics/bilingual-lyrics-service.js';
 import { LyricsOffsetService } from './lyrics/lyrics-offset-service.js';
+import { SimplifiedLyricsService } from './lyrics/simplified-lyrics-service.js';
 import { loadPreferredLyricsSource } from './lyrics/lyrics-source.js';
 import { preciseTimingForLocalTask } from './lyrics/precise-timing.js';
 import { OnlineLyricsService } from './lyrics/online-lyrics-service.js';
@@ -21,6 +28,10 @@ import { LocalLyricsService } from './local-lyrics/local-lyrics-service.js';
 import { logger } from './logging.js';
 import { setImmersiveFullscreen } from './immersive-fullscreen.js';
 import { VisualAnalysisService } from './visual-analysis/service.js';
+import type { TaskNotificationService } from './task-notifications.js';
+import type { AppSettingsService } from './settings/app-settings.js';
+import type { MusicDownloadService } from './music-download/service.js';
+import type { RemoteSyncService } from './remote-sync/service.js';
 
 const TRACK_ID_PATTERN = /^[a-f0-9]{24}$/;
 const PLAYBACK_CHECKPOINT_REASONS = new Set<PlaybackCheckpoint['reason']>([
@@ -43,27 +54,65 @@ export function registerIpcHandlers(
   localLyrics: LocalLyricsService,
   bilingualLyrics: BilingualLyricsService,
   lyricsOffset: LyricsOffsetService,
+  simplifiedLyrics: SimplifiedLyricsService,
   visualAnalysis: VisualAnalysisService,
+  taskNotifications: TaskNotificationService,
+  settings: AppSettingsService,
+  musicDownloads: MusicDownloadService,
+  remoteSync: RemoteSyncService,
 ): void {
   library.setListeners(
     (snapshot) => {
       getWindow()?.webContents.send(IPC_CHANNELS.libraryChanged, snapshot);
       visualAnalysis.scheduleLibrary(snapshot.tracks);
+      remoteSync.onLibraryChanged(snapshot);
     },
     (progress) => getWindow()?.webContents.send(IPC_CHANNELS.libraryScanProgress, progress),
   );
   localLyrics.setListener((task) => {
     getWindow()?.webContents.send(IPC_CHANNELS.lyricsLocalChanged, task);
+    taskNotifications.handleLocal(task);
   });
   bilingualLyrics.setListener((task) => {
     getWindow()?.webContents.send(IPC_CHANNELS.lyricsBilingualChanged, task);
+    taskNotifications.handleBilingual(task);
   });
   visualAnalysis.setListeners(
     (analysis) => getWindow()?.webContents.send(IPC_CHANNELS.visualAnalysisChanged, analysis),
     (progress) => getWindow()?.webContents.send(IPC_CHANNELS.visualAnalysisProgress, progress),
   );
+  musicDownloads.setListener((task) => {
+    getWindow()?.webContents.send(IPC_CHANNELS.musicDownloadChanged, task);
+  });
+  remoteSync.setListener((snapshot) => {
+    getWindow()?.webContents.send(IPC_CHANNELS.remoteChanged, snapshot);
+  });
 
   ipcMain.handle(IPC_CHANNELS.librarySnapshot, () => library.getSnapshot());
+
+  ipcMain.handle(IPC_CHANNELS.lyricsTasks, () => ({
+    local: localLyrics.getTasks(),
+    bilingual: bilingualLyrics.getTasks(),
+  }));
+
+  ipcMain.handle(
+    IPC_CHANNELS.lyricsTaskStatusOverride,
+    (_event, target: unknown, statusOverride: unknown) => {
+      assertLyricsTaskTarget(target);
+      if (statusOverride !== null && statusOverride !== 'resolved' && statusOverride !== 'cancelled') {
+        throw new Error('无效的任务强制状态');
+      }
+      const override = statusOverride as LyricsTaskStatusOverride | null;
+      if (target.kind === 'local') {
+        return localLyrics.setStatusOverride(target.trackId, override)
+          .then((task) => ({ kind: 'local' as const, task }));
+      }
+      return {
+        kind: 'bilingual' as const,
+        task: bilingualLyrics.setStatusOverride(target.trackId, override),
+      };
+    },
+  );
 
   ipcMain.handle(IPC_CHANNELS.playbackState, () => database.getPlaybackState());
 
@@ -131,6 +180,21 @@ export function registerIpcHandlers(
     },
   );
 
+  ipcMain.handle(IPC_CHANNELS.libraryChooseArtwork, async (_event, trackId: unknown) => {
+    if (typeof trackId !== 'string' || !TRACK_ID_PATTERN.test(trackId)) {
+      throw new Error('无效的歌曲标识');
+    }
+    const owner = getWindow() ?? undefined;
+    const options: OpenDialogOptions = {
+      title: '选择 MP3 封面',
+      properties: ['openFile'],
+      filters: [{ name: '封面图片', extensions: ['jpg', 'jpeg', 'png'] }],
+    };
+    const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return library.updateTrackArtwork(trackId, result.filePaths[0]);
+  });
+
   ipcMain.handle(IPC_CHANNELS.libraryRemoveTrack, (_event, trackId: unknown) => {
     if (typeof trackId !== 'string' || !TRACK_ID_PATTERN.test(trackId)) {
       throw new Error('无效的歌曲标识');
@@ -182,6 +246,21 @@ export function registerIpcHandlers(
         || !/^[a-f0-9]{64}$/.test(sourceRevision)
       ) throw new Error('无效的歌词偏移写入参数');
       return lyricsOffset.writeAdjustedTiming(trackId, offsetMs, sourceRevision);
+    },
+  );
+
+  ipcMain.handle(
+    IPC_CHANNELS.lyricsWriteSimplified,
+    (_event, trackId: unknown, offsetMs: unknown, sourceRevision: unknown) => {
+      assertTrackId(trackId);
+      if (
+        typeof offsetMs !== 'number'
+        || !Number.isSafeInteger(offsetMs)
+        || Math.abs(offsetMs) > 300_000
+        || typeof sourceRevision !== 'string'
+        || !/^[a-f0-9]{64}$/.test(sourceRevision)
+      ) throw new Error('无效的简体歌词写入参数');
+      return simplifiedLyrics.write(trackId, offsetMs, sourceRevision);
     },
   );
 
@@ -336,6 +415,110 @@ export function registerIpcHandlers(
     return bilingualLyrics.writeTag(trackId);
   });
 
+  ipcMain.handle(IPC_CHANNELS.settingsGet, () => settings.getSnapshot());
+
+  ipcMain.handle(IPC_CHANNELS.settingsChooseDownloadDirectory, async () => {
+    const owner = getWindow() ?? undefined;
+    const options: OpenDialogOptions = {
+      title: '选择音乐下载目录',
+      defaultPath: settings.getDownloadDirectory(),
+      properties: ['openDirectory', 'createDirectory'],
+    };
+    const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return settings.setDownloadDirectory(result.filePaths[0]);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.settingsUpdateProxy, (_event, update: unknown) => {
+    if (
+      !update
+      || typeof update !== 'object'
+      || typeof (update as { enabled?: unknown }).enabled !== 'boolean'
+      || typeof (update as { url?: unknown }).url !== 'string'
+    ) throw new Error('无效的代理设置');
+    return settings.updateProxy(update as ProxySettingsUpdate);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.settingsUpdateMinio, async (_event, update: unknown) => {
+    if (
+      !update
+      || typeof update !== 'object'
+      || typeof (update as { endpoint?: unknown }).endpoint !== 'string'
+      || typeof (update as { bucket?: unknown }).bucket !== 'string'
+      || typeof (update as { accessKey?: unknown }).accessKey !== 'string'
+      || typeof (update as { autoSync?: unknown }).autoSync !== 'boolean'
+      || ('secretKey' in update
+        && (update as { secretKey?: unknown }).secretKey !== undefined
+        && typeof (update as { secretKey?: unknown }).secretKey !== 'string')
+    ) throw new Error('无效的 MinIO 设置');
+    const snapshot = await settings.updateMinio(update as MinioSettingsUpdate);
+    await remoteSync.onSettingsChanged();
+    return snapshot;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.settingsClearMinio, async () => {
+    const snapshot = await settings.clearMinio();
+    await remoteSync.onSettingsChanged();
+    return snapshot;
+  });
+
+  ipcMain.handle(IPC_CHANNELS.settingsChooseCookieFile, async () => {
+    const owner = getWindow() ?? undefined;
+    const options: OpenDialogOptions = {
+      title: '选择 YouTube cookies.txt',
+      properties: ['openFile'],
+      filters: [
+        { name: 'Netscape Cookie 文件', extensions: ['txt'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    };
+    const result = owner ? await dialog.showOpenDialog(owner, options) : await dialog.showOpenDialog(options);
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return settings.importCookieFile(result.filePaths[0]);
+  });
+
+  ipcMain.handle(IPC_CHANNELS.settingsClearCookie, () => settings.clearCookie());
+  ipcMain.handle(IPC_CHANNELS.remoteSnapshot, () => remoteSync.getSnapshot());
+  ipcMain.handle(IPC_CHANNELS.remoteRefresh, () => remoteSync.refresh());
+  ipcMain.handle(IPC_CHANNELS.remoteTestConnection, () => remoteSync.testConnection());
+  ipcMain.handle(IPC_CHANNELS.remoteSyncAll, () => remoteSync.syncAll());
+  ipcMain.handle(IPC_CHANNELS.remoteSyncTrack, (_event, trackId: unknown) => {
+    assertTrackId(trackId);
+    return remoteSync.syncTrack(trackId);
+  });
+  ipcMain.handle(IPC_CHANNELS.musicRuntime, () => musicDownloads.getRuntime());
+  ipcMain.handle(IPC_CHANNELS.musicTasks, () => musicDownloads.getTasks());
+  ipcMain.handle(IPC_CHANNELS.musicSearch, (_event, keyword: unknown, limit: unknown) => {
+    if (typeof keyword !== 'string') throw new Error('无效的音乐搜索关键词');
+    if (limit !== undefined && (typeof limit !== 'number' || !Number.isInteger(limit))) {
+      throw new Error('无效的搜索结果数量');
+    }
+    return musicDownloads.search(keyword, limit as number | undefined);
+  });
+  ipcMain.handle(IPC_CHANNELS.musicDownloadStart, (_event, request: unknown) => {
+    if (
+      !request
+      || typeof request !== 'object'
+      || typeof (request as { musicId?: unknown }).musicId !== 'string'
+      || typeof (request as { title?: unknown }).title !== 'string'
+      || typeof (request as { channel?: unknown }).channel !== 'string'
+      || ('cover' in request
+        && (request as { cover?: unknown }).cover !== undefined
+        && typeof (request as { cover?: unknown }).cover !== 'string')
+    ) throw new Error('无效的音乐下载参数');
+    return musicDownloads.startDownload(request as MusicDownloadRequest);
+  });
+  ipcMain.handle(IPC_CHANNELS.musicDownloadCancel, (_event, taskId: unknown) => {
+    if (typeof taskId !== 'string') throw new Error('无效的下载任务标识');
+    return musicDownloads.cancelDownload(taskId);
+  });
+  ipcMain.handle(IPC_CHANNELS.musicOpenDownloadDirectory, async () => {
+    const directory = settings.getDownloadDirectory();
+    await mkdir(directory, { recursive: true });
+    const result = await shell.openPath(directory);
+    if (result) throw new Error(result);
+  });
+
   ipcMain.handle(IPC_CHANNELS.appVersion, () => app.getVersion());
 
   ipcMain.handle(IPC_CHANNELS.appSetFullscreen, (event, fullscreen: unknown) => {
@@ -357,13 +540,17 @@ export function removeIpcHandlers(): void {
     IPC_CHANNELS.libraryRescan,
     IPC_CHANNELS.libraryImportDropped,
     IPC_CHANNELS.libraryUpdateMetadata,
+    IPC_CHANNELS.libraryChooseArtwork,
     IPC_CHANNELS.libraryRemoveTrack,
     IPC_CHANNELS.playbackState,
     IPC_CHANNELS.playbackCheckpoint,
     IPC_CHANNELS.visualAnalysisGet,
     IPC_CHANNELS.visualAnalysisRun,
     IPC_CHANNELS.lyricsLoad,
+    IPC_CHANNELS.lyricsTasks,
+    IPC_CHANNELS.lyricsTaskStatusOverride,
     IPC_CHANNELS.lyricsWriteAdjustedTiming,
+    IPC_CHANNELS.lyricsWriteSimplified,
     IPC_CHANNELS.lyricsOnlineTask,
     IPC_CHANNELS.lyricsOnlineSearch,
     IPC_CHANNELS.lyricsOnlineSave,
@@ -382,6 +569,24 @@ export function removeIpcHandlers(): void {
     IPC_CHANNELS.lyricsBilingualStart,
     IPC_CHANNELS.lyricsBilingualCancel,
     IPC_CHANNELS.lyricsBilingualWriteTag,
+    IPC_CHANNELS.settingsGet,
+    IPC_CHANNELS.settingsChooseDownloadDirectory,
+    IPC_CHANNELS.settingsUpdateProxy,
+    IPC_CHANNELS.settingsUpdateMinio,
+    IPC_CHANNELS.settingsClearMinio,
+    IPC_CHANNELS.settingsChooseCookieFile,
+    IPC_CHANNELS.settingsClearCookie,
+    IPC_CHANNELS.remoteSnapshot,
+    IPC_CHANNELS.remoteRefresh,
+    IPC_CHANNELS.remoteTestConnection,
+    IPC_CHANNELS.remoteSyncAll,
+    IPC_CHANNELS.remoteSyncTrack,
+    IPC_CHANNELS.musicRuntime,
+    IPC_CHANNELS.musicSearch,
+    IPC_CHANNELS.musicTasks,
+    IPC_CHANNELS.musicDownloadStart,
+    IPC_CHANNELS.musicDownloadCancel,
+    IPC_CHANNELS.musicOpenDownloadDirectory,
     IPC_CHANNELS.appVersion,
     IPC_CHANNELS.appSetFullscreen,
   ]) {
@@ -393,6 +598,15 @@ function assertTrackId(trackId: unknown): asserts trackId is string {
   if (typeof trackId !== 'string' || !TRACK_ID_PATTERN.test(trackId)) {
     throw new Error('无效的歌曲标识');
   }
+}
+
+function assertLyricsTaskTarget(target: unknown): asserts target is LyricsTaskTarget {
+  if (!target || typeof target !== 'object') throw new Error('无效的歌词任务');
+  const candidate = target as Partial<LyricsTaskTarget>;
+  if (candidate.kind !== 'local' && candidate.kind !== 'bilingual') {
+    throw new Error('无效的歌词任务类型');
+  }
+  assertTrackId(candidate.trackId);
 }
 
 function assertPlaybackCheckpoint(

@@ -87,6 +87,7 @@ describe('LibraryDatabase', () => {
         hasLyrics: true,
         hasArtwork: true,
         playbackUrl: 'lyralume-media://track/0123456789abcdef01234567',
+        artworkUrl: 'lyralume-media://artwork/0123456789abcdef01234567?v=42',
       }),
     ]);
     expect(JSON.stringify(snapshot.tracks)).not.toContain(musicPath);
@@ -247,6 +248,26 @@ describe('LibraryDatabase', () => {
     database.close();
   });
 
+  it('keeps downloaded files out of an existing library root until manually imported', async () => {
+    const { database, directory } = await createDatabase();
+    const downloadDirectory = path.join(directory, 'downloads');
+    const musicPath = path.join(downloadDirectory, 'downloaded.mp3');
+    const track = {
+      ...scannedTrack(directory, musicPath),
+      fileName: 'downloaded.mp3',
+    };
+    database.addRoot(directory);
+
+    expect(database.ignoreFileForAutomaticScan(musicPath)).toBe(true);
+    database.syncRoot(directory, [track], new Set([musicPath]));
+    expect(database.getSnapshot().tracks).toHaveLength(0);
+
+    database.clearIgnoredForImport(musicPath);
+    database.syncRoot(directory, [track], new Set([musicPath]));
+    expect(database.getSnapshot().tracks).toHaveLength(1);
+    database.close();
+  });
+
   it('removes a single-file library root together with its track', async () => {
     const { database, directory } = await createDatabase();
     const musicPath = path.join(directory, 'track.flac');
@@ -295,6 +316,48 @@ describe('LibraryDatabase', () => {
       profile,
       visualDNA,
     });
+    database.close();
+  });
+
+  it('persists remote sync records independently from local tracks and replaces remote cache atomically', async () => {
+    const { database, directory } = await createDatabase();
+    const musicPath = path.join(directory, 'track.flac');
+    const track = scannedTrack(directory, musicPath);
+    database.syncRoot(directory, [track], new Set([musicPath]));
+    database.saveRemoteSyncRecord({
+      trackId: track.id,
+      syncId: '7d0a144f-5dd1-4501-a213-2299ce0c07f4',
+      objectName: 'lyralume/v1/tracks/7d0a144f-5dd1-4501-a213-2299ce0c07f4/audio.flac',
+      status: 'synced',
+      progress: 1,
+      localSize: track.fileSize,
+      localModifiedAt: track.modifiedAt,
+      localSha256: 'a'.repeat(64),
+      remoteEtag: 'etag',
+      syncedAt: 10,
+      retryCount: 0,
+      updatedAt: 10,
+    });
+    database.replaceRemoteMusicCache([{
+      syncId: '7d0a144f-5dd1-4501-a213-2299ce0c07f4',
+      objectName: 'lyralume/v1/tracks/7d0a144f-5dd1-4501-a213-2299ce0c07f4/audio.flac',
+      fileName: 'track.flac',
+      title: 'Track',
+      artist: 'Artist',
+      album: 'Album',
+      duration: 120,
+      fileSize: track.fileSize,
+      lastModified: 10,
+      etag: 'etag',
+      sha256: 'a'.repeat(64),
+    }], 10);
+
+    database.removeTrack(track.id);
+    expect(database.getRemoteSyncRecord(track.id)?.status).toBe('synced');
+    expect(database.getRemoteMusicCache()).toHaveLength(1);
+
+    database.replaceRemoteMusicCache([], 11);
+    expect(database.getRemoteMusicCache()).toEqual([]);
     database.close();
   });
 });

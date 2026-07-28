@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Lyralume</string>
+    <string name="download_notification_channel_name">音乐下载</string>
+    <string name="download_notification_channel_description">显示远程音乐的后台下载进度</string>
+    <string name="download_notification_title">Lyralume 后台下载</string>
+    <string name="download_notification_cancel">停止</string>
+    <string name="playback_notification_channel_name">音乐播放</string>
+</resources>

@@ -12,6 +12,7 @@ import type {
   LocalLyricsStartOptions,
   LocalLyricsTask,
   LocalLyricsTaskError,
+  LyricsTaskStatusOverride,
 } from '../../shared/contracts.js';
 import {
   normalizeTrackLanguage,
@@ -196,6 +197,27 @@ export class LocalLyricsService {
       return interrupted;
     }
     return stored;
+  }
+
+  getTasks(): LocalLyricsTask[] {
+    return this.database.getLocalLyricsTasks()
+      .map((task) => this.getTask(task.trackId))
+      .filter((task) => task.status !== 'idle')
+      .sort((left, right) => right.updatedAt - left.updatedAt);
+  }
+
+  async setStatusOverride(
+    trackId: string,
+    statusOverride: LyricsTaskStatusOverride | null,
+  ): Promise<LocalLyricsTask> {
+    const task = this.getTask(trackId);
+    if (task.status === 'idle') throw new Error('当前歌曲还没有本机歌词任务');
+    if (this.activeTasks.has(trackId) || ACTIVE_STATUSES.has(task.status)) {
+      throw new Error('运行中的任务不能强制改状态，请先取消任务');
+    }
+    const updated = this.update(task, { statusOverride: statusOverride ?? undefined });
+    await this.checkpoint(updated);
+    return updated;
   }
 
   async start(trackId: string, options: LocalLyricsStartOptions = {}): Promise<LocalLyricsTask> {

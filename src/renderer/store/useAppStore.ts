@@ -10,6 +10,10 @@ import type {
   LocalLyricsProofreadResult,
   LocalLyricsStartOptions,
   LocalLyricsTask,
+  LyricsTaskKind,
+  LyricsTaskSnapshot,
+  LyricsTaskStatusOverride,
+  LyricsTaskTarget,
   LyricsStatus,
   OnlineLyricsTask,
   PlaybackProgress,
@@ -23,6 +27,11 @@ import { mergePreciseLyricTiming, parseLrc, type LyricLine } from '../../shared/
 
 export type PlaybackMode = 'sequence' | 'shuffle' | 'repeat-one';
 export type VisualQuality = 'eco' | 'balanced' | 'high';
+export type AppView = 'library' | 'remote' | 'online' | 'tasks' | 'settings';
+
+export interface TaskDetailRequest extends LyricsTaskTarget {
+  requestId: number;
+}
 
 interface VisualSettings {
   quality: VisualQuality;
@@ -96,6 +105,8 @@ function reconcileShuffleQueue(queueIds: string[], shuffledIds: string[]): strin
 }
 
 interface AppState {
+  activeView: AppView;
+  taskDetailRequest: TaskDetailRequest | null;
   tracks: Track[];
   roots: LibraryRoot[];
   libraryLoading: boolean;
@@ -117,6 +128,7 @@ interface AppState {
   lyricOffsetMs: number;
   lyricsSource: 'lrc' | 'embedded' | null;
   lyricsRevision: string | null;
+  simplifiedLyricsWriteBusy: boolean;
   lyricTimingWriteBusy: boolean;
   lyricTimingWriteError: string | null;
   lyricTimingWriteMessage: string | null;
@@ -135,12 +147,23 @@ interface AppState {
   bilingualLyricsTask: BilingualLyricsTask | null;
   bilingualLyricsTasks: Record<string, BilingualLyricsTask>;
   bilingualLyricsBusy: boolean;
+  lyricsTasksLoading: boolean;
+  lyricsTasksError: string | null;
   visualsEnabled: boolean;
   visualQuality: VisualQuality;
   visualIntensity: number;
   visualReducedMotion: boolean;
   initialize(): Promise<void>;
+  setActiveView(view: AppView): void;
+  openLyricsTask(kind: LyricsTaskKind, trackId: string): void;
   applySnapshot(snapshot: LibrarySnapshot): void;
+  applyLyricsTaskSnapshot(snapshot: LyricsTaskSnapshot): void;
+  loadLyricsTasks(): Promise<void>;
+  setLyricsTaskStatusOverride(
+    kind: LyricsTaskKind,
+    trackId: string,
+    statusOverride: LyricsTaskStatusOverride | null,
+  ): Promise<void>;
   applyPlaybackState(snapshot: PlaybackStateSnapshot): void;
   applyPlaybackProgress(progress: PlaybackProgress): void;
   chooseDirectory(): Promise<void>;
@@ -173,7 +196,7 @@ interface AppState {
   applyLocalLyricsTask(task: LocalLyricsTask): void;
   applyLocalLyricsProofreadProgress(progress: LocalLyricsProofreadProgress): void;
   startLocalLyrics(options?: LocalLyricsStartOptions): Promise<void>;
-  cancelLocalLyrics(): Promise<void>;
+  cancelLocalLyrics(trackId?: string): Promise<void>;
   proofreadLocalLyrics(
     update: LocalLyricsDraftUpdate,
   ): Promise<LocalLyricsProofreadResult | null>;
@@ -186,8 +209,9 @@ interface AppState {
   loadBilingualLyricsTask(trackId: string): Promise<void>;
   applyBilingualLyricsTask(task: BilingualLyricsTask): void;
   startBilingualLyrics(options?: BilingualLyricsStartOptions): Promise<void>;
-  cancelBilingualLyrics(): Promise<void>;
+  cancelBilingualLyrics(trackId?: string): Promise<void>;
   writeBilingualLyricsTag(): Promise<BilingualLyricsTask | null>;
+  writeSimplifiedLyrics(): Promise<boolean>;
   writeAdjustedLyricTiming(): Promise<boolean>;
   adjustLyricOffset(deltaMs: number): void;
   resetLyricOffset(): void;
@@ -302,6 +326,8 @@ function failedBilingualTask(
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
+  activeView: 'library',
+  taskDetailRequest: null,
   tracks: [],
   roots: [],
   libraryLoading: true,
@@ -323,6 +349,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   lyricOffsetMs: 0,
   lyricsSource: null,
   lyricsRevision: null,
+  simplifiedLyricsWriteBusy: false,
   lyricTimingWriteBusy: false,
   lyricTimingWriteError: null,
   lyricTimingWriteMessage: null,
@@ -341,19 +368,33 @@ export const useAppStore = create<AppState>((set, get) => ({
   bilingualLyricsTask: null,
   bilingualLyricsTasks: {},
   bilingualLyricsBusy: false,
+  lyricsTasksLoading: true,
+  lyricsTasksError: null,
   visualsEnabled: true,
   visualQuality: initialVisualSettings.quality,
   visualIntensity: initialVisualSettings.intensity,
   visualReducedMotion: initialVisualSettings.reducedMotion,
 
   initialize: async () => {
-    set({ libraryLoading: true, libraryMessage: null });
+    set({
+      libraryLoading: true,
+      libraryMessage: null,
+      lyricsTasksLoading: true,
+      lyricsTasksError: null,
+    });
     try {
-      const [snapshot, playbackState] = await Promise.all([
+      const [snapshot, playbackState, taskSnapshot] = await Promise.all([
         window.lyralume.library.getSnapshot(),
         window.lyralume.playback.getState().catch(() => null),
+        window.lyralume.lyrics.getTasks().catch((error) => {
+          set({
+            lyricsTasksError: error instanceof Error ? error.message : '任务记录读取失败',
+          });
+          return null;
+        }),
       ]);
       get().applySnapshot(snapshot);
+      if (taskSnapshot) get().applyLyricsTaskSnapshot(taskSnapshot);
       if (playbackState) {
         get().applyPlaybackState(playbackState);
         if (playbackState.lastTrackId && snapshot.tracks.some(
@@ -365,7 +406,70 @@ export const useAppStore = create<AppState>((set, get) => ({
         libraryMessage: error instanceof Error ? error.message : '音乐库载入失败',
       });
     } finally {
-      set({ libraryLoading: false });
+      set({ libraryLoading: false, lyricsTasksLoading: false });
+    }
+  },
+
+  setActiveView: (activeView) => set({ activeView }),
+
+  openLyricsTask: (kind, trackId) => {
+    set((state) => ({
+      activeView: 'tasks',
+      taskDetailRequest: {
+        kind,
+        trackId,
+        requestId: (state.taskDetailRequest?.requestId ?? 0) + 1,
+      },
+    }));
+    if (get().tracks.some((track) => track.id === trackId)) {
+      get().selectTrack(trackId, false);
+    }
+  },
+
+  applyLyricsTaskSnapshot: (snapshot) => {
+    const validTrackIds = new Set(get().tracks.map((track) => track.id));
+    const localLyricsTasks = Object.fromEntries(snapshot.local
+      .filter((task) => validTrackIds.has(task.trackId) && task.status !== 'idle')
+      .map((task) => [task.trackId, task]));
+    const bilingualLyricsTasks = Object.fromEntries(snapshot.bilingual
+      .filter((task) => validTrackIds.has(task.trackId) && task.status !== 'idle')
+      .map((task) => [task.trackId, task]));
+    const currentTrackId = get().currentTrackId;
+    set({
+      localLyricsTasks,
+      bilingualLyricsTasks,
+      localLyricsTask: currentTrackId ? localLyricsTasks[currentTrackId] ?? null : null,
+      bilingualLyricsTask: currentTrackId ? bilingualLyricsTasks[currentTrackId] ?? null : null,
+      lyricsTasksError: null,
+    });
+  },
+
+  loadLyricsTasks: async () => {
+    set({ lyricsTasksLoading: true, lyricsTasksError: null });
+    try {
+      get().applyLyricsTaskSnapshot(await window.lyralume.lyrics.getTasks());
+    } catch (error) {
+      set({
+        lyricsTasksError: error instanceof Error ? error.message : '任务记录读取失败',
+      });
+    } finally {
+      set({ lyricsTasksLoading: false });
+    }
+  },
+
+  setLyricsTaskStatusOverride: async (kind, trackId, statusOverride) => {
+    set({ lyricsTasksError: null });
+    try {
+      const result = await window.lyralume.lyrics.setTaskStatusOverride(
+        { kind, trackId },
+        statusOverride,
+      );
+      if (result.kind === 'local') get().applyLocalLyricsTask(result.task);
+      else get().applyBilingualLyricsTask(result.task);
+    } catch (error) {
+      set({
+        lyricsTasksError: error instanceof Error ? error.message : '任务状态修改失败',
+      });
     }
   },
 
@@ -401,6 +505,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       lyricOffsetMs: currentStillExists ? state.lyricOffsetMs : 0,
       lyricsSource: currentStillExists ? state.lyricsSource : null,
       lyricsRevision: currentStillExists ? state.lyricsRevision : null,
+      simplifiedLyricsWriteBusy: currentStillExists ? state.simplifiedLyricsWriteBusy : false,
       lyricTimingWriteBusy: currentStillExists ? state.lyricTimingWriteBusy : false,
       lyricTimingWriteError: currentStillExists ? state.lyricTimingWriteError : null,
       lyricTimingWriteMessage: currentStillExists ? state.lyricTimingWriteMessage : null,
@@ -442,8 +547,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       const result = await window.lyralume.library.chooseDirectory();
       if (!result) return;
       get().applySnapshot(result);
-      const warningText = result.warnings.length
-        ? `已导入 ${result.importedTracks} 首，${result.warnings.length} 个文件无法读取`
+      const firstWarning = result.warnings[0];
+      const warningText = firstWarning
+        ? `已导入 ${result.importedTracks} 首，${result.warnings.length} 个文件无法读取：${firstWarning.fileName}（${firstWarning.message}）`
         : `已导入 ${result.importedTracks} 首歌曲`;
       set({ libraryMessage: warningText });
     } catch (error) {
@@ -459,9 +565,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const result = await window.lyralume.library.importDropped(files);
       get().applySnapshot(result);
+      const firstWarning = result.warnings[0];
       set({
-        libraryMessage: result.warnings.length
-          ? `已导入 ${result.importedTracks} 首，${result.warnings.length} 个项目无法读取`
+        libraryMessage: firstWarning
+          ? `已导入 ${result.importedTracks} 首，${result.warnings.length} 个项目无法读取：${firstWarning.fileName}（${firstWarning.message}）`
           : `已导入 ${result.importedTracks} 首歌曲`,
       });
     } catch (error) {
@@ -556,6 +663,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       lyricOffsetMs: 0,
       lyricsSource: null,
       lyricsRevision: null,
+      simplifiedLyricsWriteBusy: false,
       lyricTimingWriteBusy: false,
       lyricTimingWriteError: null,
       lyricTimingWriteMessage: null,
@@ -960,13 +1068,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  cancelLocalLyrics: async () => {
-    const trackId = get().currentTrackId;
-    if (!trackId || get().localLyricsBusy) return;
-    set({ localLyricsBusy: true });
+  cancelLocalLyrics: async (requestedTrackId) => {
+    const trackId = requestedTrackId ?? get().currentTrackId;
+    if (!trackId) return;
+    const affectsCurrentTrack = get().currentTrackId === trackId;
+    if (affectsCurrentTrack && get().localLyricsBusy) return;
+    if (affectsCurrentTrack) set({ localLyricsBusy: true });
     try {
       const task = await window.lyralume.lyrics.cancelLocal(trackId);
-      if (get().currentTrackId === trackId) set({ localLyricsTask: task });
+      get().applyLocalLyricsTask(task);
     } finally {
       if (get().currentTrackId === trackId) set({ localLyricsBusy: false });
     }
@@ -1122,8 +1232,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  cancelBilingualLyrics: async () => {
-    const trackId = get().currentTrackId;
+  cancelBilingualLyrics: async (requestedTrackId) => {
+    const trackId = requestedTrackId ?? get().currentTrackId;
     if (!trackId) return;
     try {
       const task = await window.lyralume.lyrics.cancelBilingual(trackId);
@@ -1131,7 +1241,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch (error) {
       const task = failedBilingualTask(
         trackId,
-        get().bilingualLyricsTask,
+        get().bilingualLyricsTasks[trackId] ?? null,
         error instanceof Error ? error.message : 'Codex 双语译配取消失败',
       );
       get().applyBilingualLyricsTask(task);
@@ -1159,6 +1269,48 @@ export const useAppStore = create<AppState>((set, get) => ({
       return task;
     } finally {
       if (get().currentTrackId === trackId) set({ bilingualLyricsBusy: false });
+    }
+  },
+
+  writeSimplifiedLyrics: async () => {
+    const state = get();
+    const trackId = state.currentTrackId;
+    const sourceRevision = state.lyricsRevision;
+    const track = state.tracks.find((item) => item.id === trackId);
+    if (
+      !trackId
+      || !track
+      || !sourceRevision
+      || state.lyricsStatus !== 'loaded'
+      || state.simplifiedLyricsWriteBusy
+    ) return false;
+    const offsetMs = state.lyricOffsetMs;
+    set({
+      simplifiedLyricsWriteBusy: true,
+      libraryMessage: `正在将《${track.title}》的歌词转为简体并写入原 MP3…`,
+    });
+    try {
+      const result = await window.lyralume.lyrics.writeSimplified(
+        trackId,
+        offsetMs,
+        sourceRevision,
+      );
+      if (get().currentTrackId === trackId) await get().loadLyrics(trackId);
+      set({
+        libraryMessage: result.changedLineCount > 0
+          ? `已转换 ${result.changedLineCount} 行，并将共 ${result.lineCount} 行写入《${track.title}》原 MP3 并通过回读验证`
+          : `歌词原本已是简体；已将共 ${result.lineCount} 行写入《${track.title}》原 MP3 并通过回读验证`,
+      });
+      return true;
+    } catch (error) {
+      set({
+        libraryMessage: error instanceof Error
+          ? error.message
+          : '简体歌词写入原 MP3 失败',
+      });
+      return false;
+    } finally {
+      set({ simplifiedLyricsWriteBusy: false });
     }
   },
 

@@ -3,7 +3,8 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import type { IAudioMetadata } from 'music-metadata';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { scanRoot } from './scanner';
 
 const temporaryDirectories: string[] = [];
@@ -26,6 +27,29 @@ function pcmWave(durationSeconds = 0.1, sampleRate = 8_000): Buffer {
   buffer.write('data', 36);
   buffer.writeUInt32LE(dataSize, 40);
   return buffer;
+}
+
+function mp3Metadata(lyrics: unknown[]): IAudioMetadata {
+  return {
+    format: {
+      container: 'MPEG',
+      codec: 'MPEG 1 Layer 3',
+      duration: 120,
+      tagTypes: ['ID3v2.3'],
+      trackInfo: [],
+    },
+    common: {
+      track: { no: null, of: null },
+      disk: { no: null, of: null },
+      movementIndex: { no: null, of: null },
+      title: 'Tagged Song',
+      artist: 'Artist',
+      album: 'Album',
+      lyrics,
+    },
+    native: {},
+    quality: { warnings: [] },
+  } as unknown as IAudioMetadata;
 }
 
 afterEach(async () => {
@@ -84,5 +108,59 @@ describe('scanRoot', () => {
     expect(result.discoveredPaths).toEqual(new Set([audioPath]));
     expect(result.tracks).toHaveLength(1);
     expect(result.tracks[0].fileName).toBe('dropped.wav');
+  });
+
+  it('migrates timestamped MP3 text lyrics to syncText before importing', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'lyralume-scan-test-'));
+    temporaryDirectories.push(directory);
+    const audioPath = path.join(directory, 'text-lyrics.mp3');
+    await writeFile(audioPath, 'audio');
+    const sourceLyrics = '[00:01.000]First\n[00:02.500]Second\n';
+    const readMetadata = vi.fn()
+      .mockResolvedValueOnce(mp3Metadata([{ language: 'chi', text: sourceLyrics }]))
+      .mockResolvedValueOnce(mp3Metadata([{
+        descriptor: 'Lyralume / Imported USLT',
+        syncText: [
+          { timestamp: 1_000, text: 'First' },
+          { timestamp: 2_500, text: 'Second' },
+        ],
+      }]));
+    const migrateUnsynchronizedLyrics = vi.fn(async () => undefined);
+
+    const result = await scanRoot(audioPath, undefined, {
+      readMetadata,
+      migrateUnsynchronizedLyrics,
+    });
+
+    expect(migrateUnsynchronizedLyrics).toHaveBeenCalledWith(audioPath, sourceLyrics);
+    expect(readMetadata).toHaveBeenCalledTimes(2);
+    expect(result.warnings).toEqual([]);
+    expect(result.tracks).toHaveLength(1);
+    expect(result.tracks[0].hasEmbeddedLyrics).toBe(true);
+  });
+
+  it('does not import an MP3 when its text lyrics cannot be converted', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'lyralume-scan-test-'));
+    temporaryDirectories.push(directory);
+    const audioPath = path.join(directory, 'plain-text-lyrics.mp3');
+    await writeFile(audioPath, 'audio');
+    const readMetadata = vi.fn(async () => mp3Metadata([{
+      language: 'chi',
+      text: 'These lyrics have no timestamps',
+    }]));
+    const migrateUnsynchronizedLyrics = vi.fn(async () => {
+      throw new Error('内嵌 text 歌词不包含有效的 LRC 同步时间戳');
+    });
+
+    const result = await scanRoot(audioPath, undefined, {
+      readMetadata,
+      migrateUnsynchronizedLyrics,
+    });
+
+    expect(result.tracks).toHaveLength(0);
+    expect(result.warnings).toEqual([{
+      fileName: 'plain-text-lyrics.mp3',
+      message: '内嵌 text 歌词不包含有效的 LRC 同步时间戳',
+    }]);
   });
 });

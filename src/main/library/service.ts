@@ -1,4 +1,4 @@
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
 import { watch, type FSWatcher } from 'chokidar';
 import type {
@@ -12,13 +12,23 @@ import { isTrackLanguage } from '../../shared/contracts.js';
 import { logger } from '../logging.js';
 import { TrackWriteCoordinator } from '../track-write-coordinator.js';
 import { LibraryDatabase } from './database.js';
-import { isAudioCandidateFile, isLibraryFile, scanRoot } from './scanner.js';
+import {
+  isAudioCandidateFile,
+  isLibraryFile,
+  scanRoot,
+  trackIdForPath,
+} from './scanner.js';
 
 type SnapshotListener = (snapshot: LibrarySnapshot) => void;
 type ProgressListener = (progress: ScanProgress) => void;
 
 export interface TrackMetadataWriter {
   writeMetadataAndVerify(audioPath: string, metadata: TrackMetadataUpdate): Promise<void>;
+  writeArtworkAndVerify?(audioPath: string, artworkPath: string): Promise<{ mime: string; data: Buffer }>;
+  convertUnsynchronizedLyricsAndVerify?(
+    audioPath: string,
+    unsynchronizedLyrics: string,
+  ): Promise<void>;
 }
 
 function cleanMetadataField(value: string, label: string): string {
@@ -64,7 +74,7 @@ export class LibraryService {
     this.database.clearIgnoredForImport(rootPath);
     this.database.addRoot(rootPath);
     this.watchRoot(rootPath);
-    return this.enqueueScan([rootPath]);
+    return this.enqueueScan([rootPath], true);
   }
 
   async addAndScanDropped(droppedPaths: string[]): Promise<ScanResult> {
@@ -107,7 +117,7 @@ export class LibraryService {
         warnings,
       };
     }
-    const result = await this.enqueueScan(roots);
+    const result = await this.enqueueScan(roots, true);
     return { ...result, warnings: [...warnings, ...result.warnings] };
   }
 
@@ -166,13 +176,52 @@ export class LibraryService {
     return next;
   }
 
-  private enqueueScan(rootPaths: string[]): Promise<ScanResult> {
-    const next = this.scanQueue.then(() => this.performScan(rootPaths));
+  updateTrackArtwork(trackId: string, artworkPath: string): Promise<LibrarySnapshot> {
+    const next = this.scanQueue.then(async () => {
+      const track = this.database.getTrackLocation(trackId);
+      if (!track) throw new Error('音乐库中找不到这首歌曲');
+      if (extname(track.filePath).toLocaleLowerCase() !== '.mp3') {
+        throw new Error('当前仅支持修改 MP3 文件的封面');
+      }
+      if (!this.metadataWriter?.writeArtworkAndVerify) throw new Error('MP3 封面写入功能尚未配置');
+      const imageStat = await stat(artworkPath);
+      if (!imageStat.isFile() || imageStat.size === 0) throw new Error('选择的封面图片无效');
+      if (imageStat.size > 20 * 1024 * 1024) throw new Error('封面图片不能超过 20 MB');
+      const imageData = await readFile(artworkPath);
+      const isJpeg = imageData.length >= 3
+        && imageData[0] === 0xff && imageData[1] === 0xd8 && imageData[2] === 0xff;
+      const isPng = imageData.length >= 8
+        && imageData.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      if (!isJpeg && !isPng) throw new Error('封面必须是有效的 JPEG 或 PNG 图片');
+      const artwork = await this.trackWrites.run(
+        trackId,
+        () => this.metadataWriter!.writeArtworkAndVerify!(track.filePath, artworkPath),
+      );
+      const audioStat = await stat(track.filePath);
+      if (!this.database.setTrackArtwork(
+        trackId,
+        artwork.mime,
+        artwork.data,
+        audioStat.size,
+        audioStat.mtimeMs,
+      )) throw new Error('音乐库中找不到这首歌曲');
+      logger.info(`[track:${trackId}] Wrote artwork to the source MP3 and verified it`);
+      return this.refreshSnapshot();
+    });
     this.scanQueue = next.catch(() => undefined);
     return next;
   }
 
-  private async performScan(rootPaths: string[]): Promise<ScanResult> {
+  private enqueueScan(rootPaths: string[], migrateTextLyrics = false): Promise<ScanResult> {
+    const next = this.scanQueue.then(() => this.performScan(rootPaths, migrateTextLyrics));
+    this.scanQueue = next.catch(() => undefined);
+    return next;
+  }
+
+  private async performScan(
+    rootPaths: string[],
+    migrateTextLyrics: boolean,
+  ): Promise<ScanResult> {
     const warnings: ScanWarning[] = [];
     let scannedFiles = 0;
     let importedTracks = 0;
@@ -180,11 +229,34 @@ export class LibraryService {
     for (const rootPath of rootPaths) {
       try {
         logger.info(`Scanning library root: ${rootPath}`);
-        const result = await scanRoot(rootPath, (progress) => this.progressListener?.(progress));
+        const result = await scanRoot(
+          rootPath,
+          (progress) => this.progressListener?.(progress),
+          {
+            rejectUnconvertedTextLyrics: migrateTextLyrics,
+            migrateUnsynchronizedLyrics: migrateTextLyrics
+              && this.metadataWriter?.convertUnsynchronizedLyricsAndVerify
+              ? async (audioPath, lyricsText) => {
+                const trackId = trackIdForPath(audioPath);
+                await this.trackWrites.run(
+                  trackId,
+                  () => this.metadataWriter!.convertUnsynchronizedLyricsAndVerify!(
+                    audioPath,
+                    lyricsText,
+                  ),
+                );
+                logger.info(`[track:${trackId}] Converted embedded USLT text to SYLT and verified it`);
+              }
+              : undefined,
+          },
+        );
         this.database.syncRoot(rootPath, result.tracks, result.discoveredPaths);
         scannedFiles += result.discoveredPaths.size;
         importedTracks += result.tracks.length;
         warnings.push(...result.warnings);
+        for (const warning of result.warnings) {
+          logger.warn(`Skipped ${warning.fileName}: ${warning.message}`);
+        }
       } catch (error) {
         logger.error(`Library scan failed for ${rootPath}`, error);
         warnings.push({

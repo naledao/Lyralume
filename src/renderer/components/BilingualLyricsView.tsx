@@ -98,7 +98,7 @@ export function BilingualLyricsView({
               type="button"
               className="bilingual-line"
               data-active={index === activeIndex}
-              key={line.id}
+              key={`${line.id}-${index}`}
               onClick={() => onSeek(line.time + offsetMs / 1_000)}
             >
               <span lang="und">{line.originalText || '· · ·'}</span>

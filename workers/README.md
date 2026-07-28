@@ -11,21 +11,26 @@ The pinned top-level versions are:
 - PyTorch 2.8.0 with CUDA 12.8
 - ONNX Runtime GPU 1.22.0 (CUDA 12.x / cuDNN 9)
 
-For a local development setup on Windows, create the environments outside the
-application installation directory, for example under the app user-data
-directory:
+Lyralume reads the Python environment inherited from the current computer. It
+first honors an active `VIRTUAL_ENV` or `CONDA_PREFIX`, then asks the Windows
+Python Launcher for Python 3.11, and finally checks `python`/`python3` on
+`PATH`. It does not assume a user-specific installation directory.
+
+For isolated local environments (recommended because UVR and WhisperX pin
+different dependencies), create them anywhere on the computer, for example:
 
 ```powershell
-py -3.11 -m venv "$env:APPDATA\Lyralume\ai\uvr\.venv"
-& "$env:APPDATA\Lyralume\ai\uvr\.venv\Scripts\python.exe" -m pip install -r workers\uvr\requirements-cuda.txt
+py -3.11 -m venv "D:\PythonEnvs\lyralume-uvr"
+& "D:\PythonEnvs\lyralume-uvr\Scripts\python.exe" -m pip install -r workers\uvr\requirements-cuda.txt
 
-py -3.11 -m venv "$env:APPDATA\Lyralume\ai\whisperx\.venv"
-& "$env:APPDATA\Lyralume\ai\whisperx\.venv\Scripts\python.exe" -m pip install -r workers\whisperx\requirements.txt
+py -3.11 -m venv "D:\PythonEnvs\lyralume-whisperx"
+& "D:\PythonEnvs\lyralume-whisperx\Scripts\python.exe" -m pip install -r workers\whisperx\requirements.txt
 ```
 
 Set `LYRALUME_UVR_PYTHON` and `LYRALUME_WHISPERX_PYTHON` when the environments
-are stored elsewhere. For CPU fallback, install `requirements-cpu.txt` in the
-UVR environment and start a task with the CPU option. NVIDIA GPU remains the
+should stay independent, or set `LYRALUME_PYTHON` to use one interpreter for
+both workers. For CPU fallback, install `requirements-cpu.txt` in the UVR
+environment and start a task with the CPU option. NVIDIA GPU remains the
 supported accelerated path. FFmpeg must be discoverable by both environments.
 
 Model downloads are performed by the upstream libraries into the app user-data

@@ -4,7 +4,11 @@ export type IconName =
   | 'add'
   | 'album'
   | 'back'
+  | 'cloud'
+  | 'download'
+  | 'image'
   | 'edit'
+  | 'folder'
   | 'forward'
   | 'fullscreen'
   | 'fullscreenExit'
@@ -16,8 +20,10 @@ export type IconName =
   | 'repeatOne'
   | 'remove'
   | 'search'
+  | 'settings'
   | 'sequence'
   | 'sparkles'
+  | 'tasks'
   | 'shuffle'
   | 'volume';
 
@@ -25,7 +31,11 @@ const paths: Record<IconName, React.ReactNode> = {
   add: <path d="M12 5v14M5 12h14" />,
   album: <><circle cx="12" cy="12" r="8" /><circle cx="12" cy="12" r="2.5" /><path d="M16.8 7.8 14 10" /></>,
   back: <><path d="M6 5v14" /><path d="m18 6-9 6 9 6Z" /></>,
+  cloud: <path d="M7 18h10a4 4 0 0 0 .7-7.9A6 6 0 0 0 6.3 9 4.5 4.5 0 0 0 7 18Z" />,
+  download: <><path d="M12 3v12" /><path d="m7 10 5 5 5-5" /><path d="M5 20h14" /></>,
+  image: <><rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9" r="1.5" /><path d="m3 16 5-5 4 4 2-2 7 7" /></>,
   edit: <><path d="m4 20 4.2-1 10.6-10.6-3.2-3.2L5 15.8Z" /><path d="m13.8 7 3.2 3.2" /></>,
+  folder: <path d="M3 7h7l2 2h9v10H3Z" />,
   forward: <><path d="M18 5v14" /><path d="m6 6 9 6-9 6Z" /></>,
   fullscreen: <><path d="M8 3H3v5M16 3h5v5M21 16v5h-5M3 16v5h5" /></>,
   fullscreenExit: <><path d="M8 3v5H3M16 3v5h5M21 16h-5v5M3 16h5v5" /></>,
@@ -37,8 +47,10 @@ const paths: Record<IconName, React.ReactNode> = {
   repeatOne: <><path d="m17 2 4 4-4 4" /><path d="M3 11V9a3 3 0 0 1 3-3h15" /><path d="m7 22-4-4 4-4" /><path d="M21 13v2a3 3 0 0 1-3 3H3" /><path d="M10 10h2v5M10 15h4" /></>,
   remove: <><path d="M5 7h14M9 7V4h6v3M8 10v8M12 10v8M16 10v8M7 7l1 13h8l1-13" /></>,
   search: <><circle cx="10.5" cy="10.5" r="6.5" /><path d="m15.5 15.5 4 4" /></>,
+  settings: <><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></>,
   sequence: <><path d="M4 6h15M4 12h15M4 18h10" /><path d="m17 15 3 3-3 3" /></>,
   sparkles: <><path d="m12 3 1.2 3.8L17 8l-3.8 1.2L12 13l-1.2-3.8L7 8l3.8-1.2Z" /><path d="m18 14 .7 2.3L21 17l-2.3.7L18 20l-.7-2.3L15 17l2.3-.7Z" /></>,
+  tasks: <><path d="M9 6h11M9 12h11M9 18h11" /><path d="m4 6 1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2" /></>,
   shuffle: <><path d="M3 6h2.5c4.5 0 6.5 12 11 12H21" /><path d="m17 14 4 4-4 4" /><path d="M3 18h2.5c1.8 0 3.2-1.9 4.5-4.2" /><path d="M14 8.2C14.8 6.9 15.6 6 16.5 6H21" /><path d="m17 2 4 4-4 4" /></>,
   volume: <><path d="M4 10v4h4l5 4V6l-5 4Z" /><path d="M16 9a4 4 0 0 1 0 6M18 6a8 8 0 0 1 0 12" /></>,
 };

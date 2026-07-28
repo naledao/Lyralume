@@ -90,6 +90,8 @@ export interface OnlineLyricsTask {
   updatedAt: number;
 }
 
+export type LyricsTaskStatusOverride = 'resolved' | 'cancelled';
+
 export type LocalLyricsTaskStatus =
   | 'idle'
   | 'queued'
@@ -156,6 +158,7 @@ export interface LocalLyricsTask {
   stage: LocalLyricsStage;
   progress: number;
   message: string;
+  statusOverride?: LyricsTaskStatusOverride;
   language?: string;
   draftLines: LocalLyricsDraftLine[];
   draftOffsetMs: number;
@@ -264,6 +267,7 @@ export interface BilingualLyricsTask {
   status: BilingualLyricsTaskStatus;
   progress: number;
   message: string;
+  statusOverride?: LyricsTaskStatusOverride;
   targetLanguage: 'zh-CN';
   style: BilingualLyricsTranslationStyle;
   sourceRevision?: string;
@@ -279,6 +283,22 @@ export interface BilingualLyricsTask {
 export interface BilingualLyricsStartOptions {
   style?: BilingualLyricsTranslationStyle;
 }
+
+export type LyricsTaskKind = 'local' | 'bilingual';
+
+export interface LyricsTaskTarget {
+  kind: LyricsTaskKind;
+  trackId: string;
+}
+
+export interface LyricsTaskSnapshot {
+  local: LocalLyricsTask[];
+  bilingual: BilingualLyricsTask[];
+}
+
+export type LyricsTaskStatusOverrideResult =
+  | { kind: 'local'; task: LocalLyricsTask }
+  | { kind: 'bilingual'; task: BilingualLyricsTask };
 
 export interface TrackMetadata {
   title: string;
@@ -365,6 +385,157 @@ export interface ScanProgress {
   completed?: boolean;
 }
 
+export interface AppSettingsSnapshot {
+  downloadDirectory: string;
+  proxyEnabled: boolean;
+  proxyUrl: string;
+  cookieConfigured: boolean;
+  cookieFileName?: string;
+  cookieUpdatedAt?: number;
+  minioEndpoint: string;
+  minioBucket: string;
+  minioAccessKey: string;
+  minioSecretConfigured: boolean;
+  minioConfigured: boolean;
+  minioAutoSync: boolean;
+}
+
+export interface ProxySettingsUpdate {
+  enabled: boolean;
+  url: string;
+}
+
+export interface MinioSettingsUpdate {
+  endpoint: string;
+  bucket: string;
+  accessKey: string;
+  secretKey?: string;
+  autoSync: boolean;
+}
+
+export interface MinioConnectionSettings {
+  endpoint: string;
+  bucket: string;
+  accessKey: string;
+  secretKey: string;
+}
+
+export type RemoteSyncStatus =
+  | 'local_only'
+  | 'pending'
+  | 'hashing'
+  | 'uploading'
+  | 'synced'
+  | 'local_changed'
+  | 'remote_only'
+  | 'failed';
+
+export interface RemoteSyncRecord {
+  trackId: string;
+  syncId: string;
+  objectName?: string;
+  status: Exclude<RemoteSyncStatus, 'local_only' | 'local_changed' | 'remote_only'>;
+  progress: number;
+  localSize: number;
+  localModifiedAt: number;
+  localSha256?: string;
+  remoteEtag?: string;
+  syncedAt?: number;
+  retryCount: number;
+  error?: string;
+  updatedAt: number;
+}
+
+export interface RemoteCatalogEntry {
+  syncId: string;
+  objectName: string;
+  fileName: string;
+  title: string;
+  artist: string;
+  album: string;
+  duration: number;
+  fileSize: number;
+  lastModified: number;
+  etag: string;
+  sha256?: string;
+}
+
+export interface RemoteMusicItem extends RemoteCatalogEntry {
+  localTrackId?: string;
+  syncStatus: RemoteSyncStatus;
+  progress: number;
+  error?: string;
+}
+
+export interface RemoteMusicSnapshot {
+  configured: boolean;
+  online: boolean;
+  autoSync: boolean;
+  items: RemoteMusicItem[];
+  refreshedAt?: number;
+  error?: string;
+}
+
+export interface RemoteConnectionTestResult {
+  ok: true;
+  endpoint: string;
+  bucket: string;
+  message: string;
+}
+
+export interface MusicRuntimeSnapshot {
+  ytDlpAvailable: boolean;
+  ytDlpPath: string;
+  ffmpegAvailable: boolean;
+  ffmpegPath: string;
+}
+
+export interface MusicSearchItem {
+  id: string;
+  title: string;
+  channel: string;
+  duration: number;
+  cover?: string;
+}
+
+export interface MusicSearchResult {
+  keyword: string;
+  results: MusicSearchItem[];
+}
+
+export type MusicDownloadTaskStatus =
+  | 'queued'
+  | 'running'
+  | 'postprocessing'
+  | 'completed'
+  | 'cancelled'
+  | 'failed';
+
+export interface MusicDownloadTask {
+  id: string;
+  musicId: string;
+  title: string;
+  channel: string;
+  cover?: string;
+  status: MusicDownloadTaskStatus;
+  progress: number;
+  downloadedBytes: number;
+  totalBytes?: number;
+  speedBytesPerSecond?: number;
+  etaSeconds?: number;
+  outputFileName?: string;
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface MusicDownloadRequest {
+  musicId: string;
+  title: string;
+  channel: string;
+  cover?: string;
+}
+
 export interface LyricsDocument {
   status: 'loaded' | 'missing' | 'error';
   raw?: string;
@@ -381,12 +552,17 @@ export interface LyricsTimingWriteResult {
   source: 'lrc' | 'embedded';
 }
 
+export interface SimplifiedLyricsWriteResult extends LyricsTimingWriteResult {
+  changedLineCount: number;
+}
+
 export interface LyralumeApi {
   library: {
     getSnapshot(): Promise<LibrarySnapshot>;
     chooseDirectory(): Promise<ScanResult | null>;
     importDropped(files: File[]): Promise<ScanResult>;
     updateMetadata(trackId: string, metadata: TrackMetadataUpdate): Promise<LibrarySnapshot>;
+    chooseArtwork(trackId: string): Promise<LibrarySnapshot | null>;
     removeTrack(trackId: string): Promise<LibrarySnapshot>;
     rescan(): Promise<ScanResult>;
     onChanged(callback: (snapshot: LibrarySnapshot) => void): () => void;
@@ -404,11 +580,21 @@ export interface LyralumeApi {
   };
   lyrics: {
     load(trackId: string): Promise<LyricsDocument>;
+    getTasks(): Promise<LyricsTaskSnapshot>;
+    setTaskStatusOverride(
+      target: LyricsTaskTarget,
+      statusOverride: LyricsTaskStatusOverride | null,
+    ): Promise<LyricsTaskStatusOverrideResult>;
     writeAdjustedTiming(
       trackId: string,
       offsetMs: number,
       sourceRevision: string,
     ): Promise<LyricsTimingWriteResult>;
+    writeSimplified(
+      trackId: string,
+      offsetMs: number,
+      sourceRevision: string,
+    ): Promise<SimplifiedLyricsWriteResult>;
     getOnlineTask(trackId: string): Promise<OnlineLyricsTask>;
     searchOnline(trackId: string): Promise<OnlineLyricsTask>;
     saveOnline(trackId: string, candidateId: number, overwriteExisting?: boolean): Promise<OnlineLyricsTask>;
@@ -443,9 +629,36 @@ export interface LyralumeApi {
     writeBilingualTag(trackId: string): Promise<BilingualLyricsTask>;
     onBilingualTaskChanged(callback: (task: BilingualLyricsTask) => void): () => void;
   };
+  settings: {
+    get(): Promise<AppSettingsSnapshot>;
+    chooseDownloadDirectory(): Promise<AppSettingsSnapshot | null>;
+    updateProxy(update: ProxySettingsUpdate): Promise<AppSettingsSnapshot>;
+    updateMinio(update: MinioSettingsUpdate): Promise<AppSettingsSnapshot>;
+    clearMinio(): Promise<AppSettingsSnapshot>;
+    chooseCookieFile(): Promise<AppSettingsSnapshot | null>;
+    clearCookie(): Promise<AppSettingsSnapshot>;
+  };
+  remote: {
+    getSnapshot(): Promise<RemoteMusicSnapshot>;
+    refresh(): Promise<RemoteMusicSnapshot>;
+    testConnection(): Promise<RemoteConnectionTestResult>;
+    syncAll(): Promise<RemoteMusicSnapshot>;
+    syncTrack(trackId: string): Promise<RemoteMusicSnapshot>;
+    onChanged(callback: (snapshot: RemoteMusicSnapshot) => void): () => void;
+  };
+  music: {
+    getRuntime(): Promise<MusicRuntimeSnapshot>;
+    search(keyword: string, limit?: number): Promise<MusicSearchResult>;
+    getTasks(): Promise<MusicDownloadTask[]>;
+    startDownload(request: MusicDownloadRequest): Promise<MusicDownloadTask>;
+    cancelDownload(taskId: string): Promise<MusicDownloadTask>;
+    openDownloadDirectory(): Promise<void>;
+    onTaskChanged(callback: (task: MusicDownloadTask) => void): () => void;
+  };
   app: {
     getVersion(): Promise<string>;
     setFullscreen(fullscreen: boolean): Promise<boolean>;
+    onOpenTask(callback: (target: LyricsTaskTarget) => void): () => void;
     onFullscreenChanged(callback: (fullscreen: boolean) => void): () => void;
     onPlaybackFlushRequested(callback: (requestId: string) => void): () => void;
     completePlaybackFlush(requestId: string): void;
@@ -457,6 +670,7 @@ export const IPC_CHANNELS = {
   libraryChooseDirectory: 'library:choose-directory',
   libraryImportDropped: 'library:import-dropped',
   libraryUpdateMetadata: 'library:update-metadata',
+  libraryChooseArtwork: 'library:choose-artwork',
   libraryRemoveTrack: 'library:remove-track',
   libraryRescan: 'library:rescan',
   libraryChanged: 'library:changed',
@@ -470,7 +684,10 @@ export const IPC_CHANNELS = {
   visualAnalysisChanged: 'visual-analysis:changed',
   visualAnalysisProgress: 'visual-analysis:progress',
   lyricsLoad: 'lyrics:load',
+  lyricsTasks: 'lyrics:tasks',
+  lyricsTaskStatusOverride: 'lyrics:task-status-override',
   lyricsWriteAdjustedTiming: 'lyrics:write-adjusted-timing',
+  lyricsWriteSimplified: 'lyrics:write-simplified',
   lyricsOnlineTask: 'lyrics:online-task',
   lyricsOnlineSearch: 'lyrics:online-search',
   lyricsOnlineSave: 'lyrics:online-save',
@@ -492,7 +709,28 @@ export const IPC_CHANNELS = {
   lyricsBilingualCancel: 'lyrics:bilingual-cancel',
   lyricsBilingualWriteTag: 'lyrics:bilingual-write-tag',
   lyricsBilingualChanged: 'lyrics:bilingual-changed',
+  settingsGet: 'settings:get',
+  settingsChooseDownloadDirectory: 'settings:choose-download-directory',
+  settingsUpdateProxy: 'settings:update-proxy',
+  settingsUpdateMinio: 'settings:update-minio',
+  settingsClearMinio: 'settings:clear-minio',
+  settingsChooseCookieFile: 'settings:choose-cookie-file',
+  settingsClearCookie: 'settings:clear-cookie',
+  remoteSnapshot: 'remote:snapshot',
+  remoteRefresh: 'remote:refresh',
+  remoteTestConnection: 'remote:test-connection',
+  remoteSyncAll: 'remote:sync-all',
+  remoteSyncTrack: 'remote:sync-track',
+  remoteChanged: 'remote:changed',
+  musicRuntime: 'music:runtime',
+  musicSearch: 'music:search',
+  musicTasks: 'music:tasks',
+  musicDownloadStart: 'music:download-start',
+  musicDownloadCancel: 'music:download-cancel',
+  musicOpenDownloadDirectory: 'music:open-download-directory',
+  musicDownloadChanged: 'music:download-changed',
   appVersion: 'app:version',
   appSetFullscreen: 'app:set-fullscreen',
+  appOpenTask: 'app:open-task',
   appFullscreenChanged: 'app:fullscreen-changed',
 } as const;

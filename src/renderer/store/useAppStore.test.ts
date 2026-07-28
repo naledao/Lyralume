@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { LyralumeApi, Track } from '../../shared/contracts';
+import type { LocalLyricsTask, LyralumeApi, Track } from '../../shared/contracts';
 import { useAppStore } from './useAppStore';
 
 const track = (id: string, title: string): Track => ({
@@ -23,6 +23,7 @@ const api = {
     chooseDirectory: vi.fn(),
     importDropped: vi.fn(),
     updateMetadata: vi.fn(),
+    chooseArtwork: vi.fn(),
     removeTrack: vi.fn(),
     rescan: vi.fn(),
     onChanged: vi.fn(() => () => undefined),
@@ -40,7 +41,10 @@ const api = {
   },
   lyrics: {
     load: vi.fn(),
+    getTasks: vi.fn(),
+    setTaskStatusOverride: vi.fn(),
     writeAdjustedTiming: vi.fn(),
+    writeSimplified: vi.fn(),
     getOnlineTask: vi.fn(),
     searchOnline: vi.fn(),
     saveOnline: vi.fn(),
@@ -63,9 +67,36 @@ const api = {
     writeBilingualTag: vi.fn(),
     onBilingualTaskChanged: vi.fn(() => () => undefined),
   },
+  settings: {
+    get: vi.fn(),
+    chooseDownloadDirectory: vi.fn(),
+    updateProxy: vi.fn(),
+    updateMinio: vi.fn(),
+    clearMinio: vi.fn(),
+    chooseCookieFile: vi.fn(),
+    clearCookie: vi.fn(),
+  },
+  remote: {
+    getSnapshot: vi.fn(),
+    refresh: vi.fn(),
+    testConnection: vi.fn(),
+    syncAll: vi.fn(),
+    syncTrack: vi.fn(),
+    onChanged: vi.fn(() => () => undefined),
+  },
+  music: {
+    getRuntime: vi.fn(),
+    search: vi.fn(),
+    getTasks: vi.fn(),
+    startDownload: vi.fn(),
+    cancelDownload: vi.fn(),
+    openDownloadDirectory: vi.fn(),
+    onTaskChanged: vi.fn(() => () => undefined),
+  },
   app: {
     getVersion: vi.fn(),
     setFullscreen: vi.fn(),
+    onOpenTask: vi.fn(() => () => undefined),
     onFullscreenChanged: vi.fn(() => () => undefined),
     onPlaybackFlushRequested: vi.fn(() => () => undefined),
     completePlaybackFlush: vi.fn(),
@@ -77,12 +108,15 @@ beforeEach(() => {
   window.localStorage.clear();
   window.lyralume = api;
   api.playback.getState.mockResolvedValue({ lastTrackId: null, progress: [] });
+  api.lyrics.getTasks.mockResolvedValue({ local: [], bilingual: [] });
   api.playback.saveCheckpoint.mockImplementation(async (checkpoint) => ({
     ...checkpoint,
     updatedAt: 1,
   }));
   useAppStore.setState({
     tracks: [],
+    activeView: 'library',
+    taskDetailRequest: null,
     roots: [],
     queueIds: [],
     playbackMode: 'sequence',
@@ -97,6 +131,7 @@ beforeEach(() => {
     lyricOffsetMs: 0,
     lyricsSource: null,
     lyricsRevision: null,
+    simplifiedLyricsWriteBusy: false,
     lyricTimingWriteBusy: false,
     lyricTimingWriteError: null,
     lyricTimingWriteMessage: null,
@@ -115,6 +150,8 @@ beforeEach(() => {
     bilingualLyricsTask: null,
     bilingualLyricsTasks: {},
     bilingualLyricsBusy: false,
+    lyricsTasksLoading: false,
+    lyricsTasksError: null,
     scanning: false,
     scanProgress: null,
     libraryMessage: null,
@@ -144,6 +181,20 @@ beforeEach(() => {
     draftOffsetMs: 0,
     lowConfidenceCount: 0,
     lrcSaveStatus: 'not_started',
+    tagWriteStatus: 'not_started',
+    createdAt: 1,
+    updatedAt: 1,
+  });
+  api.lyrics.getBilingualTask.mockResolvedValue({
+    id: 'bilingual-333333333333333333333333',
+    trackId: '333333333333333333333333',
+    status: 'idle',
+    progress: 0,
+    message: '尚未创建中文双语草稿',
+    targetLanguage: 'zh-CN',
+    style: 'lyrical',
+    lines: [],
+    sources: [],
     tagWriteStatus: 'not_started',
     createdAt: 1,
     updatedAt: 1,
@@ -398,6 +449,48 @@ describe('player store', () => {
     });
   });
 
+  it('writes simplified lyrics into the original MP3 and reloads the verified embedded frame', async () => {
+    const item = { ...track('777777777777777777777777', 'Traditional'), fileName: 'Traditional.mp3' };
+    useAppStore.setState({
+      tracks: [item],
+      queueIds: [item.id],
+      currentTrackId: item.id,
+      lyricsStatus: 'loaded',
+      lyricLines: [{ id: '1', time: 2, text: '還不能回來' }],
+      lyricOffsetMs: 500,
+      lyricsSource: 'lrc',
+      lyricsRevision: '7'.repeat(64),
+    });
+    api.lyrics.writeSimplified.mockResolvedValue({
+      appliedOffsetMs: 500,
+      lineCount: 1,
+      changedLineCount: 1,
+      source: 'lrc',
+    });
+    api.lyrics.load.mockResolvedValue({
+      status: 'loaded',
+      raw: '[00:02.500]还不能回来',
+      source: 'embedded',
+      revision: '8'.repeat(64),
+    });
+
+    await expect(useAppStore.getState().writeSimplifiedLyrics()).resolves.toBe(true);
+
+    expect(api.lyrics.writeSimplified).toHaveBeenCalledWith(
+      item.id,
+      500,
+      '7'.repeat(64),
+    );
+    expect(useAppStore.getState()).toMatchObject({
+      lyricOffsetMs: 0,
+      lyricsSource: 'embedded',
+      simplifiedLyricsWriteBusy: false,
+    });
+    expect(useAppStore.getState().libraryMessage).toBe(
+      '已转换 1 行，并将共 1 行写入《Traditional》原 MP3 并通过回读验证',
+    );
+  });
+
   it('imports dropped local files through the isolated preload API', async () => {
     const item = track('444444444444444444444444', 'Dropped');
     const dropped = new File(['audio'], 'Dropped.flac', { type: 'audio/flac' });
@@ -414,6 +507,26 @@ describe('player store', () => {
     expect(api.library.importDropped).toHaveBeenCalledWith([dropped]);
     expect(useAppStore.getState().tracks[0].title).toBe('Dropped');
     expect(useAppStore.getState().libraryMessage).toBe('已导入 1 首歌曲');
+  });
+
+  it('shows why a dropped MP3 was rejected when text lyrics cannot be converted', async () => {
+    const dropped = new File(['audio'], 'Plain Lyrics.mp3', { type: 'audio/mpeg' });
+    api.library.importDropped.mockResolvedValue({
+      tracks: [],
+      roots: [{ path: 'local-source', addedAt: 1 }],
+      scannedFiles: 1,
+      importedTracks: 0,
+      warnings: [{
+        fileName: 'Plain Lyrics.mp3',
+        message: '内嵌 text 歌词不包含有效的 LRC 同步时间戳',
+      }],
+    });
+
+    await useAppStore.getState().importDropped([dropped]);
+
+    expect(useAppStore.getState().libraryMessage).toBe(
+      '已导入 0 首，1 个项目无法读取：Plain Lyrics.mp3（内嵌 text 歌词不包含有效的 LRC 同步时间戳）',
+    );
   });
 
   it('queues a dropped file instead of silently ignoring it during a scan', async () => {
@@ -563,5 +676,77 @@ describe('player store', () => {
       lyricsStatus: 'loaded',
       lyricsSource: 'embedded',
     });
+  });
+
+  it('keeps global task records and opens a task without starting playback', () => {
+    const item = track('999999999999999999999999', 'Background task');
+    const task: LocalLyricsTask = {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      trackId: item.id,
+      status: 'review',
+      stage: 'draft',
+      progress: 1,
+      message: '草稿已生成，等待校对',
+      draftLines: [{
+        id: 'line-1',
+        startTime: 1,
+        endTime: 2,
+        text: 'line',
+        confidence: 1,
+        flags: [],
+      }],
+      draftOffsetMs: 0,
+      lowConfidenceCount: 0,
+      lrcSaveStatus: 'not_started',
+      tagWriteStatus: 'not_started',
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    useAppStore.getState().applySnapshot({ tracks: [item], roots: [] });
+    useAppStore.getState().applyLyricsTaskSnapshot({ local: [task], bilingual: [] });
+
+    useAppStore.getState().openLyricsTask('local', item.id);
+
+    expect(useAppStore.getState()).toMatchObject({
+      activeView: 'tasks',
+      currentTrackId: item.id,
+      isPlaying: false,
+      localLyricsTask: task,
+      taskDetailRequest: {
+        kind: 'local',
+        trackId: item.id,
+        requestId: 1,
+      },
+    });
+  });
+
+  it('persists a forced task status through the isolated preload API', async () => {
+    const item = track('aaaaaaaaaaaaaaaaaaaaaaaa', 'Manual status');
+    const task: LocalLyricsTask = {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      trackId: item.id,
+      status: 'review',
+      stage: 'draft',
+      progress: 1,
+      message: '等待校对',
+      draftLines: [],
+      draftOffsetMs: 0,
+      lowConfidenceCount: 0,
+      lrcSaveStatus: 'not_started',
+      tagWriteStatus: 'not_started',
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    const resolved = { ...task, statusOverride: 'resolved' as const, updatedAt: 3 };
+    useAppStore.setState({ tracks: [item], localLyricsTasks: { [item.id]: task } });
+    api.lyrics.setTaskStatusOverride.mockResolvedValue({ kind: 'local', task: resolved });
+
+    await useAppStore.getState().setLyricsTaskStatusOverride('local', item.id, 'resolved');
+
+    expect(api.lyrics.setTaskStatusOverride).toHaveBeenCalledWith(
+      { kind: 'local', trackId: item.id },
+      'resolved',
+    );
+    expect(useAppStore.getState().localLyricsTasks[item.id]).toEqual(resolved);
   });
 });

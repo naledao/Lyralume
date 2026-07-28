@@ -22,6 +22,7 @@ export function TrackList({ tracks }: { tracks: Track[] }) {
   const removeTrack = useAppStore((state) => state.removeTrack);
   const [removingTrackId, setRemovingTrackId] = useState<string | null>(null);
   const [savingTrackId, setSavingTrackId] = useState<string | null>(null);
+  const [savingArtworkTrackId, setSavingArtworkTrackId] = useState<string | null>(null);
   const [savingLanguageTrackIds, setSavingLanguageTrackIds] = useState<Set<string>>(new Set());
   const [metadataDraft, setMetadataDraft] = useState<{
     trackId: string;
@@ -105,6 +106,33 @@ export function TrackList({ tracks }: { tracks: Track[] }) {
       await withReleasedTrackSource(track, () => removeTrack(track.id));
     } finally {
       setRemovingTrackId(null);
+    }
+  };
+
+  const changeArtwork = async (track: Track): Promise<void> => {
+    if (!track.fileName.toLocaleLowerCase().endsWith('.mp3')) {
+      window.alert('当前仅支持修改 MP3 文件的封面。');
+      return;
+    }
+    if (track.hasArtwork && !window.confirm(`要替换《${track.title}》当前的内嵌封面吗？`)) return;
+    setSavingArtworkTrackId(track.id);
+    useAppStore.setState({ libraryMessage: `正在修改《${track.title}》的 MP3 封面…` });
+    try {
+      await withReleasedTrackSource(track, async () => {
+        const snapshot = await window.lyralume.library.chooseArtwork(track.id);
+        if (snapshot) {
+          useAppStore.getState().applySnapshot(snapshot);
+          useAppStore.setState({ libraryMessage: `已修改《${track.title}》的 MP3 封面并完成回读验证` });
+        } else {
+          useAppStore.setState({ libraryMessage: null });
+        }
+      });
+    } catch (error) {
+      useAppStore.setState({
+        libraryMessage: error instanceof Error ? error.message : 'MP3 封面写入失败',
+      });
+    } finally {
+      setSavingArtworkTrackId(null);
     }
   };
 
@@ -261,6 +289,16 @@ export function TrackList({ tracks }: { tracks: Track[] }) {
                   </>
                 ) : (
                   <>
+                    <button
+                      className="track-row__artwork"
+                      type="button"
+                      title={track.hasArtwork ? '替换 MP3 封面' : '添加 MP3 封面'}
+                      aria-label={`${track.hasArtwork ? '替换' : '添加'} ${track.title} 的 MP3 封面`}
+                      disabled={savingArtworkTrackId === track.id}
+                      onClick={() => void changeArtwork(track)}
+                    >
+                      <Icon name="image" />
+                    </button>
                     <button
                       className="track-row__edit"
                       type="button"

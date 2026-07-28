@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { parseFile } from 'music-metadata';
 import {
@@ -20,7 +20,9 @@ export type ProcessRunner = (executable: string, args: string[]) => Promise<Proc
 
 export interface EmbeddedSyncedLyrics {
   descriptor?: string;
-  syncText: Array<{
+  language?: string;
+  text?: string;
+  syncText?: Array<{
     text: string;
     timestamp?: number;
   }>;
@@ -29,6 +31,7 @@ export interface EmbeddedSyncedLyrics {
 export type SyltReader = (audioPath: string) => Promise<EmbeddedSyncedLyrics[]>;
 
 export type TrackMetadataReader = (audioPath: string) => Promise<Partial<TrackMetadata>>;
+export type ArtworkReader = (audioPath: string) => Promise<{ format: string; data: Uint8Array } | undefined>;
 
 export class Kid3Error extends Error {
   constructor(
@@ -109,7 +112,7 @@ function lyricsMatch(
 ): boolean {
   const expectedLines = parseLrc(expected).lines;
   const frame = actual.find((lyrics) => lyrics.descriptor === descriptor)
-    ?? actual.find((lyrics) => lyrics.syncText.length > 0);
+    ?? actual.find((lyrics) => (lyrics.syncText?.length ?? 0) > 0);
   const actualLines = frame?.syncText ?? [];
   if (expectedLines.length === 0 || expectedLines.length !== actualLines.length) return false;
   return expectedLines.every((line, index) => (
@@ -126,10 +129,11 @@ const readEmbeddedSylt: SyltReader = async (audioPath) => {
 
 export async function readEmbeddedLyricsAsLrc(audioPath: string): Promise<string | undefined> {
   const frames = await readEmbeddedSylt(audioPath);
-  const frame = frames.find((lyrics) => lyrics.descriptor === 'Lyralume / Bilingual zh-CN')
+  const frame = frames.find((lyrics) => lyrics.descriptor === 'Lyralume / Simplified zh-CN')
+    ?? frames.find((lyrics) => lyrics.descriptor === 'Lyralume / Bilingual zh-CN')
     ?? frames.find((lyrics) => lyrics.descriptor === 'Lyralume / Time Adjusted')
     ?? frames.find((lyrics) => lyrics.descriptor === 'Lyralume / LRCLIB')
-    ?? frames.find((lyrics) => lyrics.syncText.length > 0);
+    ?? frames.find((lyrics) => (lyrics.syncText?.length ?? 0) > 0);
   const lines = (frame?.syncText ?? []).flatMap((line) => {
     if (typeof line.timestamp !== 'number') return [];
     const totalCentiseconds = Math.max(0, Math.round(line.timestamp / 10));
@@ -151,6 +155,11 @@ const readTrackMetadata: TrackMetadataReader = async (audioPath) => {
   };
 };
 
+const readArtwork: ArtworkReader = async (audioPath) => {
+  const metadata = await parseFile(audioPath);
+  return metadata.common.picture?.[0];
+};
+
 export class Kid3Adapter {
   constructor(
     private readonly cacheRoot: string,
@@ -158,7 +167,57 @@ export class Kid3Adapter {
     private readonly syltReader: SyltReader = readEmbeddedSylt,
     private readonly executable = resolveKid3Executable(),
     private readonly metadataReader: TrackMetadataReader = readTrackMetadata,
+    private readonly artworkReader: ArtworkReader = readArtwork,
   ) {}
+
+  async writeArtworkAndVerify(
+    audioPath: string,
+    artworkPath: string,
+  ): Promise<{ mime: string; data: Buffer }> {
+    await mkdir(this.cacheRoot, { recursive: true });
+    const backupPath = path.join(
+      this.cacheRoot,
+      `artwork-backup-${process.pid}-${randomUUID()}${path.extname(audioPath) || '.mp3'}`,
+    );
+    const originalStat = await stat(audioPath);
+    const expected = await readFile(artworkPath);
+    let keepBackup = false;
+    await copyFile(audioPath, backupPath);
+    try {
+      const frame = `picture:${quoteKid3Text(quoteKid3Path(artworkPath))}`;
+      await this.runner(this.executable, [
+        '-c', `set ${frame} 'Front Cover' 2`,
+        audioPath,
+      ]);
+      let artwork: Awaited<ReturnType<ArtworkReader>>;
+      try {
+        artwork = await this.artworkReader(audioPath);
+      } catch {
+        throw new Kid3Error('verification', '无法回读刚写入的封面');
+      }
+      if (
+        !artwork?.data?.length
+        || !/^image\/(?:jpeg|png)$/i.test(artwork.format)
+        || !Buffer.from(artwork.data).equals(expected)
+      ) throw new Kid3Error('verification', '回读结果与选择的封面不一致');
+      return { mime: artwork.format, data: Buffer.from(artwork.data) };
+    } catch (error) {
+      try {
+        await copyFile(backupPath, audioPath);
+        await utimes(audioPath, originalStat.atime, originalStat.mtime);
+      } catch (restoreError) {
+        keepBackup = true;
+        const reason = restoreError instanceof Error ? restoreError.message : '未知错误';
+        throw new Kid3Error(
+          'verification',
+          `封面写入失败且原文件恢复失败；备份保留在 ${backupPath}：${reason}`,
+        );
+      }
+      throw error;
+    } finally {
+      if (!keepBackup) await rm(backupPath, { force: true }).catch(() => undefined);
+    }
+  }
 
   async writeMetadataAndVerify(audioPath: string, metadata: TrackMetadataUpdate): Promise<void> {
     const fields = (['title', 'artist', 'album', 'language'] as const).filter(
@@ -207,6 +266,58 @@ export class Kid3Adapter {
       await this.writeAndVerify(audioPath, temporaryPath, descriptor);
     } finally {
       await rm(temporaryPath, { force: true }).catch(() => undefined);
+    }
+  }
+
+  async convertUnsynchronizedLyricsAndVerify(
+    audioPath: string,
+    unsynchronizedLyrics: string,
+  ): Promise<void> {
+    if (parseLrc(unsynchronizedLyrics).lines.length === 0) {
+      throw new Kid3Error('verification', '内嵌 text 歌词不包含有效的 LRC 同步时间戳');
+    }
+
+    await mkdir(this.cacheRoot, { recursive: true });
+    const backupPath = path.join(
+      this.cacheRoot,
+      `uslt-backup-${process.pid}-${randomUUID()}${path.extname(audioPath) || '.mp3'}`,
+    );
+    const originalStat = await stat(audioPath);
+    let keepBackup = false;
+
+    await copyFile(audioPath, backupPath);
+    try {
+      const descriptor = 'Lyralume / Imported USLT';
+      await this.writeLyricsAndVerify(audioPath, unsynchronizedLyrics, descriptor);
+      await this.runner(this.executable, ['-c', "set USLT '' 2", audioPath]);
+
+      let actual: EmbeddedSyncedLyrics[];
+      try {
+        actual = await this.syltReader(audioPath);
+      } catch {
+        throw new Kid3Error('verification', '无法回读转换后的同步歌词');
+      }
+      if (actual.some((lyrics) => Boolean(lyrics.text?.trim()))) {
+        throw new Kid3Error('verification', '原 text 歌词标签未被完整替换');
+      }
+      if (!lyricsMatch(unsynchronizedLyrics, actual, descriptor)) {
+        throw new Kid3Error('verification', '转换后的 syncText 与原 text 歌词不一致');
+      }
+    } catch (error) {
+      try {
+        await copyFile(backupPath, audioPath);
+        await utimes(audioPath, originalStat.atime, originalStat.mtime);
+      } catch (restoreError) {
+        keepBackup = true;
+        const reason = restoreError instanceof Error ? restoreError.message : '未知错误';
+        throw new Kid3Error(
+          'verification',
+          `歌词转换失败且原文件恢复失败；备份保留在 ${backupPath}：${reason}`,
+        );
+      }
+      throw error;
+    } finally {
+      if (!keepBackup) await rm(backupPath, { force: true }).catch(() => undefined);
     }
   }
 

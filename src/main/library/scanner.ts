@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { access, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { parseFile } from 'music-metadata';
+import { parseFile, type IAudioMetadata } from 'music-metadata';
 import {
   normalizeTrackLanguage,
   UNKNOWN_ALBUM,
@@ -31,8 +31,41 @@ export interface RootScan {
 
 export type ProgressCallback = (progress: ScanProgress) => void;
 
-function trackId(filePath: string): string {
+export type UnsynchronizedLyricsMigrator = (
+  audioPath: string,
+  lyricsText: string,
+) => Promise<void>;
+
+export interface ScanDependencies {
+  migrateUnsynchronizedLyrics?: UnsynchronizedLyricsMigrator;
+  rejectUnconvertedTextLyrics?: boolean;
+  readMetadata?: (audioPath: string) => Promise<IAudioMetadata>;
+}
+
+export function trackIdForPath(filePath: string): string {
   return createHash('sha256').update(filePath.toLocaleLowerCase()).digest('hex').slice(0, 24);
+}
+
+function hasSynchronizedLyrics(frame: {
+  syncText?: Array<{ text: string; timestamp?: number }>;
+}): boolean {
+  return (frame.syncText?.length ?? 0) > 0;
+}
+
+function unsynchronizedLyricsText(metadata: IAudioMetadata): string | undefined {
+  const frames = metadata.common.lyrics ?? [];
+  const textFrames = frames.filter((frame) => (
+    !hasSynchronizedLyrics(frame)
+    && typeof frame.text === 'string'
+    && frame.text.trim().length > 0
+  ));
+  if (textFrames.length > 0 && frames.some(hasSynchronizedLyrics)) {
+    throw new Error('歌曲同时包含 text 和 syncText 歌词，为避免覆盖已有同步歌词而拒绝导入');
+  }
+  if (textFrames.length > 1) {
+    throw new Error('检测到多个内嵌 text 歌词标签，无法安全确定要转换的内容');
+  }
+  return textFrames[0]?.text;
 }
 
 async function collectAudioFiles(rootPath: string): Promise<string[]> {
@@ -78,6 +111,7 @@ async function findSidecarLrc(filePath: string): Promise<string | null> {
 export async function scanRoot(
   rootPath: string,
   onProgress?: ProgressCallback,
+  dependencies: ScanDependencies = {},
 ): Promise<RootScan> {
   const filePaths = await collectAudioFiles(rootPath);
   const discoveredPaths = new Set(filePaths);
@@ -94,18 +128,40 @@ export async function scanRoot(
     });
 
     try {
-      const [metadata, fileStat, lrcPath] = await Promise.all([
-        parseFile(filePath, { duration: true, skipPostHeaders: true }),
+      const readMetadata = dependencies.readMetadata
+        ?? ((audioPath: string) => parseFile(audioPath, { duration: true, skipPostHeaders: true }));
+      let [metadata, fileStat, lrcPath] = await Promise.all([
+        readMetadata(filePath),
         stat(filePath),
         findSidecarLrc(filePath),
       ]);
+      const embeddedText = path.extname(filePath).toLowerCase() === '.mp3'
+        && (dependencies.migrateUnsynchronizedLyrics || dependencies.rejectUnconvertedTextLyrics)
+        ? unsynchronizedLyricsText(metadata)
+        : undefined;
+      if (embeddedText !== undefined) {
+        if (!dependencies.migrateUnsynchronizedLyrics && dependencies.rejectUnconvertedTextLyrics) {
+          throw new Error('内嵌 text 歌词需要转换为 syncText，但歌词标签转换器不可用');
+        }
+        if (dependencies.migrateUnsynchronizedLyrics) {
+          await dependencies.migrateUnsynchronizedLyrics(filePath, embeddedText);
+          metadata = await readMetadata(filePath);
+          if (unsynchronizedLyricsText(metadata) !== undefined) {
+            throw new Error('内嵌 text 歌词转换后仍然存在');
+          }
+          if (!metadata.common.lyrics?.some(hasSynchronizedLyrics)) {
+            throw new Error('内嵌 text 歌词未能转换为有效的 syncText');
+          }
+          fileStat = await stat(filePath);
+        }
+      }
       if (!metadata.format.container && !metadata.format.codec && !metadata.format.duration) {
         throw new Error('无法识别音频容器或编码');
       }
       const artwork = metadata.common.picture?.[0];
       const baseName = path.parse(filePath).name;
       tracks.push({
-        id: trackId(filePath),
+        id: trackIdForPath(filePath),
         rootPath,
         filePath,
         fileName: path.basename(filePath),
@@ -117,7 +173,7 @@ export async function scanRoot(
         fileSize: fileStat.size,
         modifiedAt: fileStat.mtimeMs,
         lrcPath,
-        hasEmbeddedLyrics: Boolean(metadata.common.lyrics?.some((frame) => frame.syncText.length > 0)),
+        hasEmbeddedLyrics: Boolean(metadata.common.lyrics?.some(hasSynchronizedLyrics)),
         artworkMime: artwork?.format ?? null,
         artwork: artwork?.data ? Buffer.from(artwork.data) : null,
       });
