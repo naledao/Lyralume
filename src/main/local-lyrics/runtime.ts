@@ -16,7 +16,9 @@ export function resolveLocalLyricsRuntime(userDataPath: string): ResolvedLocalLy
   const workerRoot = shouldUsePackagedResources(app.isPackaged)
     ? path.join(process.resourcesPath, 'workers')
     : path.join(app.getAppPath(), 'workers');
-  const python = resolveLocalLyricsPythonExecutables();
+  const python = resolveLocalLyricsPythonExecutables({
+    managedEnvironmentRoot: path.join(userDataPath, 'ai'),
+  });
   return {
     options: {
       cacheRoot: path.join(userDataPath, 'cache', 'lyrics-tasks'),

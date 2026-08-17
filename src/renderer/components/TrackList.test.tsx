@@ -141,19 +141,19 @@ describe('TrackList metadata editing', () => {
 
   it('shows the fixed language tags and saves a selection', async () => {
     api.library.updateMetadata.mockResolvedValue({
-      tracks: [{ ...item, language: 'zho' }],
+      tracks: [{ ...item, language: 'rus' }],
       roots: [],
     });
     render(<TrackList tracks={[item]} />);
 
     const language = screen.getByRole('combobox', { name: '设置 Editable Track 的语种' });
     expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
-      '未设置', '中文', '英文', '日文', '纯音乐', '韩语',
+      '未设置', '中文', '英文', '日文', '纯音乐', '韩语', '俄语',
     ]);
-    fireEvent.change(language, { target: { value: 'zho' } });
+    fireEvent.change(language, { target: { value: 'rus' } });
 
     await waitFor(() => expect(api.library.updateMetadata).toHaveBeenCalledWith(item.id, {
-      language: 'zho',
+      language: 'rus',
     }));
   });
 

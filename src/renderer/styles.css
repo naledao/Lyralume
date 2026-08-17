@@ -258,6 +258,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--teal); outl
 .track-language-select[data-language="eng"] { border-color: rgba(86,227,210,.22); color: #7fd7cc; background: rgba(45,126,116,.08); }
 .track-language-select[data-language="jpn"] { border-color: rgba(235,141,175,.22); color: #dca1ba; background: rgba(161,75,109,.07); }
 .track-language-select[data-language="kor"] { border-color: rgba(105,164,239,.22); color: #8ebbed; background: rgba(61,112,177,.08); }
+.track-language-select[data-language="rus"] { border-color: rgba(224,106,106,.22); color: #dc9c9c; background: rgba(166,66,66,.08); }
 .track-language-select[data-language="zxx"] { border-color: rgba(174,182,202,.17); color: #a5aec2; background: rgba(255,255,255,.035); }
 .track-language-select:disabled { opacity: .48; cursor: wait; }
 .track-row--editing { min-height: 74px; background: linear-gradient(90deg, rgba(121,102,228,.13), rgba(77,211,192,.035)); box-shadow: inset 2px 0 var(--teal); }

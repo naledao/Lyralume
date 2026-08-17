@@ -11,6 +11,7 @@ interface PythonProbeCommand {
 
 export interface PythonEnvironmentResolverOptions {
   environment?: NodeJS.ProcessEnv;
+  managedEnvironmentRoot?: string;
   platform?: NodeJS.Platform;
   pathExists?: (candidate: string) => boolean;
   probe?: (
@@ -18,6 +19,18 @@ export interface PythonEnvironmentResolverOptions {
     args: string[],
     environment: NodeJS.ProcessEnv,
   ) => string | undefined;
+}
+
+function managedWorkerExecutable(
+  root: string,
+  worker: 'uvr' | 'whisperx',
+  platform: NodeJS.Platform,
+): string {
+  const platformPath = platform === 'win32' ? path.win32 : path.posix;
+  const executableParts = platform === 'win32'
+    ? ['Scripts', 'python.exe']
+    : ['bin', 'python'];
+  return platformPath.join(root, worker, '.venv', ...executableParts);
 }
 
 export interface LocalLyricsPythonExecutables {
@@ -109,6 +122,8 @@ export function resolveLocalLyricsPythonExecutables(
   options: PythonEnvironmentResolverOptions = {},
 ): LocalLyricsPythonExecutables {
   const environment = options.environment ?? process.env;
+  const platform = options.platform ?? process.platform;
+  const pathExists = options.pathExists ?? existsSync;
   const sharedPython = cleanEnvironmentValue(environment.LYRALUME_PYTHON);
   const configuredUvr = cleanEnvironmentValue(environment.LYRALUME_UVR_PYTHON);
   const configuredWhisper = cleanEnvironmentValue(environment.LYRALUME_WHISPERX_PYTHON);
@@ -119,11 +134,31 @@ export function resolveLocalLyricsPythonExecutables(
     };
   }
 
-  const detectedPython = sharedPython
-    ?? resolveSystemPythonExecutable({ ...options, environment });
+  const managedRoot = cleanEnvironmentValue(options.managedEnvironmentRoot);
+  const managedUvr = managedRoot
+    ? managedWorkerExecutable(managedRoot, 'uvr', platform)
+    : undefined;
+  const managedWhisper = managedRoot
+    ? managedWorkerExecutable(managedRoot, 'whisperx', platform)
+    : undefined;
+  const availableManagedUvr = managedUvr && pathExists(managedUvr) ? managedUvr : undefined;
+  const availableManagedWhisper = managedWhisper && pathExists(managedWhisper)
+    ? managedWhisper
+    : undefined;
+  let detectedPython: string | undefined;
+  const systemPython = (): string => {
+    detectedPython ??= resolveSystemPythonExecutable({ ...options, environment, platform });
+    return detectedPython;
+  };
 
   return {
-    uvrPython: configuredUvr ?? detectedPython,
-    whisperPython: configuredWhisper ?? detectedPython,
+    uvrPython: configuredUvr
+      ?? sharedPython
+      ?? availableManagedUvr
+      ?? systemPython(),
+    whisperPython: configuredWhisper
+      ?? sharedPython
+      ?? availableManagedWhisper
+      ?? systemPython(),
   };
 }

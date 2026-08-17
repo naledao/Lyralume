@@ -33,6 +33,42 @@ describe('local lyrics Python environment resolution', () => {
     });
   });
 
+  it('prefers the application-managed worker environments over system Python', () => {
+    const managedRoot = 'C:\\Users\\current-user\\AppData\\Roaming\\lyralume\\ai';
+    const uvrPython = path.win32.join(managedRoot, 'uvr', '.venv', 'Scripts', 'python.exe');
+    const whisperPython = path.win32.join(
+      managedRoot,
+      'whisperx',
+      '.venv',
+      'Scripts',
+      'python.exe',
+    );
+    const probe = vi.fn();
+
+    expect(resolveLocalLyricsPythonExecutables({
+      environment: {},
+      managedEnvironmentRoot: managedRoot,
+      platform: 'win32',
+      pathExists: (candidate) => candidate === uvrPython || candidate === whisperPython,
+      probe,
+    })).toEqual({ uvrPython, whisperPython });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('keeps an explicit shared Python ahead of managed environments', () => {
+    const configuredPython = 'C:\\Python311\\python.exe';
+
+    expect(resolveLocalLyricsPythonExecutables({
+      environment: { LYRALUME_PYTHON: configuredPython },
+      managedEnvironmentRoot: 'C:\\managed-ai',
+      platform: 'win32',
+      pathExists: () => true,
+    })).toEqual({
+      uvrPython: configuredPython,
+      whisperPython: configuredPython,
+    });
+  });
+
   it('prefers the active virtual environment inherited from the computer', () => {
     const virtualEnvironment = 'C:\\work\\.venv';
     const expected = path.win32.join(virtualEnvironment, 'Scripts', 'python.exe');

@@ -11,10 +11,13 @@ The pinned top-level versions are:
 - PyTorch 2.8.0 with CUDA 12.8
 - ONNX Runtime GPU 1.22.0 (CUDA 12.x / cuDNN 9)
 
-Lyralume reads the Python environment inherited from the current computer. It
-first honors an active `VIRTUAL_ENV` or `CONDA_PREFIX`, then asks the Windows
-Python Launcher for Python 3.11, and finally checks `python`/`python3` on
-`PATH`. It does not assume a user-specific installation directory.
+Unless a `LYRALUME_*_PYTHON` variable explicitly selects an interpreter,
+Lyralume first uses the dedicated environments under the app user-data
+directory at `ai/uvr/.venv` and `ai/whisperx/.venv`. When a dedicated
+environment is unavailable, it honors an active `VIRTUAL_ENV` or
+`CONDA_PREFIX`, then asks the Windows Python Launcher for Python 3.11, and
+finally checks `python`/`python3` on `PATH`. It does not assume a user-specific
+installation directory.
 
 For isolated local environments (recommended because UVR and WhisperX pin
 different dependencies), create them anywhere on the computer, for example:

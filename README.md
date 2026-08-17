@@ -62,7 +62,7 @@ pnpm tools:prepare-music
 
 ## 本地歌词草稿环境
 
-UVR 与 WhisperX 推荐使用两个隔离的 Python 3.11 环境，不能安装到 Electron 渲染进程。Worker 脚本、固定的顶层依赖版本和 Windows 安装示例位于 [`workers/README.md`](workers/README.md)。应用不再假定固定的用户目录：启动时优先读取当前电脑激活的 `VIRTUAL_ENV` 或 `CONDA_PREFIX`，随后通过 Windows Python Launcher（优先 Python 3.11）以及 `PATH` 探测本机解释器。
+UVR 与 WhisperX 推荐使用两个隔离的 Python 3.11 环境，不能安装到 Electron 渲染进程。Worker 脚本、固定的顶层依赖版本和 Windows 安装示例位于 [`workers/README.md`](workers/README.md)。除非通过 `LYRALUME_*_PYTHON` 显式指定解释器，否则应用优先使用用户数据目录 `ai/uvr/.venv` 和 `ai/whisperx/.venv` 中的专用环境；专用环境不存在时，才读取当前电脑激活的 `VIRTUAL_ENV` 或 `CONDA_PREFIX`，随后通过 Windows Python Launcher（优先 Python 3.11）以及 `PATH` 探测本机解释器。
 
 可用 `LYRALUME_UVR_PYTHON` 和 `LYRALUME_WHISPERX_PYTHON` 分别指定两个独立环境，也可用 `LYRALUME_PYTHON` 为两个 Worker 指定同一解释器；`LYRALUME_AI_DEVICE=cpu` 可把默认设备切换为 CPU。NVIDIA CUDA 是正式加速路径，CPU 是兼容回退。模型由 [Audio Separator](https://github.com/nomadkaraoke/python-audio-separator) 与 [WhisperX](https://github.com/m-bain/whisperX) 下载到应用用户数据目录，模型管理和缓存清理留在第四阶段。
 

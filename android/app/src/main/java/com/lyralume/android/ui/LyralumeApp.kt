@@ -42,10 +42,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.List as ListIcon
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.AlertDialog
@@ -460,6 +462,18 @@ private fun LocalMusicScreen(
     onDelete: (LocalTrack) -> Unit,
 ) {
     var deleteCandidate by remember { mutableStateOf<LocalTrack?>(null) }
+    var searchQuery by rememberSaveable { mutableStateOf("") }
+    val visibleTracks = remember(state.localTracks, searchQuery) {
+        state.localTracks.filter { track ->
+            matchesLocalTrackSearch(
+                query = searchQuery,
+                title = track.title,
+                artist = track.artist,
+                album = track.album,
+                fileName = track.fileName,
+            )
+        }
+    }
     deleteCandidate?.let { track ->
         AlertDialog(
             onDismissRequest = { deleteCandidate = null },
@@ -505,46 +519,107 @@ private fun LocalMusicScreen(
             title = "本地目录还没有音乐",
             description = "前往远程音乐下载歌曲，完成后会自动出现在这里。",
         )
-        else -> LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 14.dp),
-        ) {
-            item {
-                PlayAllHeader(
-                    trackCount = state.localTracks.size,
-                    onPlayAll = onPlayAll,
-                )
-            }
-            state.playback.currentTrack?.let { currentTrack ->
-                item(key = "continue-playback") {
-                    ContinuePlaybackRow(
-                        track = currentTrack,
-                        isPlaying = state.playback.isPlaying,
-                        onClick = { onPlay(currentTrack) },
+        else -> Column(Modifier.fillMaxSize()) {
+            PlayAllHeader(
+                trackCount = state.localTracks.size,
+                onPlayAll = onPlayAll,
+            )
+            LocalMusicSearchField(
+                query = searchQuery,
+                onQueryChange = { searchQuery = it },
+                onClear = { searchQuery = "" },
+            )
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 14.dp),
+            ) {
+                state.playback.currentTrack?.let { currentTrack ->
+                    item(key = "continue-playback") {
+                        ContinuePlaybackRow(
+                            track = currentTrack,
+                            isPlaying = state.playback.isPlaying,
+                            onClick = { onPlay(currentTrack) },
+                        )
+                    }
+                }
+                item(key = "local-summary") {
+                    Text(
+                        state.settings.downloadDirectoryName ?: "已授权目录",
+                        modifier = Modifier.padding(start = 20.dp, top = 15.dp, bottom = 6.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.labelMedium,
                     )
                 }
-            }
-            item(key = "local-summary") {
-                Text(
-                    state.settings.downloadDirectoryName ?: "已授权目录",
-                    modifier = Modifier.padding(start = 20.dp, top = 15.dp, bottom = 6.dp),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.labelMedium,
-                )
-            }
-            items(state.localTracks, key = { it.uri.toString() }) { track ->
-                val current = state.playback.currentTrack?.uri == track.uri
-                LocalTrackCard(
-                    track = track,
-                    isCurrent = current,
-                    isPlaying = current && state.playback.isPlaying,
-                    isDeleting = state.deletingTrackUri == track.uri,
-                    onPlay = { onPlay(track) },
-                    onDelete = { deleteCandidate = track },
-                )
+                if (visibleTracks.isEmpty()) {
+                    item(key = "local-search-empty") {
+                        Text(
+                            "没有找到匹配的本地音乐",
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 28.dp),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                } else {
+                    items(visibleTracks, key = { it.uri.toString() }) { track ->
+                        val current = state.playback.currentTrack?.uri == track.uri
+                        LocalTrackCard(
+                            track = track,
+                            isCurrent = current,
+                            isPlaying = current && state.playback.isPlaying,
+                            isDeleting = state.deletingTrackUri == track.uri,
+                            onPlay = { onPlay(track) },
+                            onDelete = { deleteCandidate = track },
+                        )
+                    }
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun LocalMusicSearchField(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    onClear: () -> Unit,
+) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        modifier = Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, bottom = 8.dp),
+        placeholder = { Text("搜索歌曲、歌手、专辑或文件名") },
+        leadingIcon = {
+            Icon(Icons.Rounded.Search, contentDescription = null)
+        },
+        trailingIcon = if (query.isNotEmpty()) {
+            {
+                IconButton(onClick = onClear) {
+                    Icon(Icons.Rounded.Close, contentDescription = "清除搜索")
+                }
+            }
+        } else {
+            null
+        },
+        singleLine = true,
+        shape = RoundedCornerShape(16.dp),
+    )
+}
+
+internal fun matchesLocalTrackSearch(
+    query: String,
+    title: String,
+    artist: String,
+    album: String,
+    fileName: String,
+): Boolean {
+    val terms = query.trim().split(Regex("\\s+")).filter(String::isNotEmpty)
+    if (terms.isEmpty()) return true
+
+    val searchableFields = listOf(title, artist, album, fileName)
+    return terms.all { term ->
+        searchableFields.any { field -> field.contains(term, ignoreCase = true) }
     }
 }
 

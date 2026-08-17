@@ -4,17 +4,19 @@ export const TRACK_LANGUAGE_OPTIONS = [
   { value: 'jpn', label: '日文' },
   { value: 'zxx', label: '纯音乐' },
   { value: 'kor', label: '韩语' },
+  { value: 'rus', label: '俄语' },
 ] as const;
 
 export type TrackLanguage = (typeof TRACK_LANGUAGE_OPTIONS)[number]['value'];
 
-export type WhisperLanguageCode = 'zh' | 'en' | 'ja' | 'ko';
+export type WhisperLanguageCode = 'zh' | 'en' | 'ja' | 'ko' | 'ru';
 
 const WHISPER_LANGUAGE_CODES: Readonly<Partial<Record<TrackLanguage, WhisperLanguageCode>>> = {
   zho: 'zh',
   eng: 'en',
   jpn: 'ja',
   kor: 'ko',
+  rus: 'ru',
 };
 
 const TRACK_LANGUAGE_VALUES = new Set<string>(
@@ -32,6 +34,8 @@ const LANGUAGE_ALIASES: Readonly<Record<string, TrackLanguage>> = {
   jpn: 'jpn',
   ko: 'kor',
   kor: 'kor',
+  ru: 'rus',
+  rus: 'rus',
   zxx: 'zxx',
 };
 

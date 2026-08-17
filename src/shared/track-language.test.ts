@@ -9,6 +9,8 @@ describe('normalizeTrackLanguage', () => {
     ['ENG', 'eng'],
     ['ja', 'jpn'],
     ['kor', 'kor'],
+    ['ru', 'rus'],
+    ['rus', 'rus'],
     ['zxx', 'zxx'],
   ] as const)('normalizes %s to %s', (input, expected) => {
     expect(normalizeTrackLanguage(input)).toBe(expected);
@@ -30,6 +32,7 @@ describe('toWhisperLanguageCode', () => {
     ['eng', 'en'],
     ['jpn', 'ja'],
     ['kor', 'ko'],
+    ['rus', 'ru'],
   ] as const)('maps library language %s to WhisperX code %s', (input, expected) => {
     expect(toWhisperLanguageCode(input)).toBe(expected);
   });
